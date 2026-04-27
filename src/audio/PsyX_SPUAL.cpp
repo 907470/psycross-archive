@@ -525,7 +525,17 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 	loopStart = 0;
 	loopLen = 0;
 
-	count = decodeSound(s_SpuMemory.samplemem + voice->attr.addr, SPU_MEMSIZE - voice->attr.addr, waveBuffer, &loopStart, &loopLen, 1);
+	/* decodeSound emits up to 2 shorts per input byte; cap the input window
+	 * so the output never overruns waveBuffer[SPU_REALMEMSIZE]. Samples that
+	 * lack a LoopEnd flag (e.g. uninitialized SPU RAM) would otherwise loop
+	 * to the SPU_MEMSIZE end (~2 MB) and write ~8 MB into a 1 MB buffer,
+	 * silently corrupting adjacent statics and deferred-crashing the mixer. */
+	{
+		int avail = SPU_MEMSIZE - voice->attr.addr;
+		int max_in = SPU_REALMEMSIZE / 2;  /* yields <= SPU_REALMEMSIZE shorts */
+		if (avail > max_in) avail = max_in;
+		count = decodeSound(s_SpuMemory.samplemem + voice->attr.addr, avail, waveBuffer, &loopStart, &loopLen, 1);
+	}
 
 	if (count == 0)
 		return;
