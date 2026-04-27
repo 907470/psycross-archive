@@ -1362,10 +1362,17 @@ void GR_SaveVRAM(const char* outputFileName, int x, int y, int width, int height
 
 void GR_CopyRGBAFramebufferToVRAM(u_int* src, int x, int y, int w, int h, int update_vram, int flip_y)
 {
-	assert(x >= 0);
-	assert(y >= 0);
-	assert(x + w <= VRAM_WIDTH);
-	assert(y + h <= VRAM_WIDTH);
+	/* OpenPete: clamp + warn instead of assert. We've seen activeDispEnv.disp.x
+	 * go negative after stub-misses inside untranslated overlays — keeping the
+	 * renderer alive lets us continue past those frames and capture the value. */
+	if (x < 0 || y < 0 || x + w > VRAM_WIDTH || y + h > VRAM_WIDTH || w <= 0 || h <= 0) {
+		static int warned_count = 0;
+		if (warned_count < 6) {
+			++warned_count;
+			fprintf(stderr, "[PsyX] GR_CopyRGBAFramebufferToVRAM bad rect (x=%d y=%d w=%d h=%d) — skipping\n", x, y, w, h);
+		}
+		return;
+	}
 
 	ushort* fb = (ushort*)malloc(w * h * sizeof(ushort));
 	uint* data_src = (uint*)src;
