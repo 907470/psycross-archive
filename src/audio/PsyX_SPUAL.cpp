@@ -81,6 +81,7 @@ typedef struct
 	ALuint alSource;
 	ushort sampledirty;
 	ushort reverb;
+	int keyed_on;       // 1 once SetKey(SPU_ON,...) fired; cleared by SetKey(SPU_OFF,...)
 } SPUALVoice;
 
 const int s_spuVoiceCount = 24;
@@ -727,10 +728,12 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 			UpdateVoiceSample(voice);
 
 			alSourcePlay(alSource);
+			voice->keyed_on = 1;
 		}
 		else
 		{
 			alSourceStop(alSource);
+			voice->keyed_on = 0;
 		}
 	}
 	SDL_UnlockMutex(g_SpuMutex);
@@ -738,7 +741,19 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 
 int PsyX_SPUAL_GetKeyStatus(u_int voice_bit)
 {
+	/* PSX libspu states (libspu.h):
+	 *   SPU_OFF        = 0  key-off, env-off  (idle / never keyed)
+	 *   SPU_ON         = 1  key-on,  env-on   (playing)
+	 *   SPU_OFF_ENV_ON = 2  key-off, env-on   (released, fading)
+	 *   SPU_ON_ENV_OFF = 3  key-on,  env-off  (= SPU_RESET; sample done
+	 *                                          while still keyed on)
+	 *
+	 * Spyro's spu.c relies on the SPU_RESET (3) value to detect that a
+	 * sound has finished naturally — it then frees the active-sound slot.
+	 * Returning a plain boolean (0/1) means slots leak forever and the
+	 * 24-voice pool fills up, dropping subsequent sounds. */
 	int state = AL_STOPPED;
+	int keyed_on = 0;
 	SDL_LockMutex(g_SpuMutex);
 
 	for (int i = 0; i < s_spuVoiceCount; i++)
@@ -750,15 +765,22 @@ int PsyX_SPUAL_GetKeyStatus(u_int voice_bit)
 		ALuint alSource = voice->alSource;
 
 		if (alSource == AL_NONE)
-			break; // SpuOff?
+			break;
 
 		alGetSourcei(alSource, AL_SOURCE_STATE, &state);
+		keyed_on = voice->keyed_on;
 		break;
 	}
 
 	SDL_UnlockMutex(g_SpuMutex);
 
-	return (state == AL_PLAYING);	// simple as this?
+	if (state == AL_PLAYING)
+		return SPU_ON;                 // 1
+	if (state == AL_PAUSED)
+		return SPU_OFF_ENV_ON;         // 2
+	if (keyed_on)
+		return SPU_ON_ENV_OFF;         // 3 (SPU_RESET) — finished while still keyed
+	return SPU_OFF;                    // 0
 }
 
 void PsyX_SPUAL_GetAllKeysStatus(char* status)
@@ -770,13 +792,20 @@ void PsyX_SPUAL_GetAllKeysStatus(char* status)
 		ALuint alSource = voice->alSource;
 		if (alSource == AL_NONE)
 		{
-			status[i] = 0; // SpuOff?
+			status[i] = SPU_OFF;
 			continue;
 		}
 
 		int state;
 		alGetSourcei(alSource, AL_SOURCE_STATE, &state);
-		status[i] = (state == AL_PLAYING);
+		if (state == AL_PLAYING)
+			status[i] = SPU_ON;
+		else if (state == AL_PAUSED)
+			status[i] = SPU_OFF_ENV_ON;
+		else if (voice->keyed_on)
+			status[i] = SPU_ON_ENV_OFF;
+		else
+			status[i] = SPU_OFF;
 	}
 	SDL_UnlockMutex(g_SpuMutex);
 }
