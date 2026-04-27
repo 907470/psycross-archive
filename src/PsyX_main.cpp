@@ -25,6 +25,13 @@
 #include "PsyX/PsyX_render.h"
 
 #ifdef _WIN32
+// pla.h is the Performance Logs and Alerts API; under MSVC's SDK it
+// transitively #includes <windows.h>, so the original code reached
+// WORD/BACKGROUND_INTENSITY/InitializeCriticalSection through it.
+// MinGW's <pla.h> is a minimal stub with no Windows-API drag-in, so we
+// pull <windows.h> in explicitly for the console-color spew helpers
+// further down in this file.
+#include <windows.h>
 #include <pla.h>
 #endif // _WIN32
 

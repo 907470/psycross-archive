@@ -8,6 +8,7 @@
 #include "PsyX/util/timer.h"
 
 #include <assert.h>
+#include <math.h>
 #include <string.h>
 
 #ifdef _WIN32
