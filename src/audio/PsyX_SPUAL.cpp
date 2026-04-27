@@ -4,6 +4,7 @@
 #include "psx/libetc.h"
 #include "psx/libmath.h"
 #include "PsyX_SPUAL.h"
+#include "PsyX_XA.h"
 
 #include <string.h>
 #include <assert.h>
@@ -255,6 +256,8 @@ int PsyX_SPUAL_InitSound()
 
 
 	InitOpenAlEffects();
+
+	PsyX_XA_Init();
 
 	return 1;
 }
