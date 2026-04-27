@@ -84,6 +84,13 @@ extern PsyXPostRenderOverlayFunc	g_psyx_postRenderOverlay;
  * replay; reset to 0xFFFF when no override is active. */
 extern unsigned short				g_PsyX_Pad_InputOverride;
 
+/* Read P1's last computed pad bitfield (after PsyX_Pad_InternalPadUpdates). Same
+ * "released = 1, pressed = 0" convention as g_PsyX_Pad_InputOverride. Returns
+ * 0xFFFF when no controller buffer is registered yet. Used by the host's
+ * --bk2-record path to capture the merged keyboard/gamepad/override state into
+ * a BizHawk-format input log. */
+extern unsigned short PsyX_Pad_GetLastP1Bits(void);
+
 /* Usually called at the beginning of main function */
 extern void PsyX_Initialise(char* windowName, int screenWidth, int screenHeight, int fullscreen);
 

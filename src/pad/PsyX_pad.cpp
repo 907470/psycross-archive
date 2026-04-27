@@ -31,6 +31,16 @@ const u_char*			g_sdlKeyboardState = NULL;
  * openpete_core can extern it via PsyX/PsyX_public.h. */
 extern "C" unsigned short g_PsyX_Pad_InputOverride = 0xFFFF;
 
+/* See PsyX_public.h. Returns the last-merged P1 pad bits (0xFFFF when no
+ * pad buffer is registered yet — happens before the game calls PadInitDirect
+ * and during boot frames before the first internal-pad-update tick). */
+extern "C" unsigned short PsyX_Pad_GetLastP1Bits(void)
+{
+	if (!g_controllers[0].padData) return 0xFFFF;
+	LPPADRAW pad = (LPPADRAW)g_controllers[0].padData;
+	return *(u_short*)pad->buttons;
+}
+
 u_short PsyX_Pad_UpdateKeyboardInput();
 void	PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad);
 static bool PsyX_Pad_UpdateKeyboardLeftStick(u_char* outX, u_char* outY);
