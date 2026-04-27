@@ -1444,10 +1444,18 @@ static int ProcessDrawEnv(P_TAG* polyTag)
 		{
 		case 0x1:
 		{
-			// DR_TPAGE
+			// DR_TPAGE — update tpage/dither only. Bit 10 of the GP0(E1)
+			// hardware word is "drawing to display area allowed", a writes-
+			// gating flag. PsyCross's `dfe` field also drives a coord-remap
+			// mode switch (DrawEnvDimensions/DrawEnvOffset, disp vs clip
+			// rect). Letting an inline DR_TPAGE rewrite that flag conflates
+			// the two — Spyro emits DR_TPAGE with bit 10 = 0 from
+			// setDrawMode-style encoders, which flipped the coord remap and
+			// vanished far/world geometry. The drawenv rect/offset config is
+			// owned by PutDrawEnv; a mid-chain texture-page change should
+			// not touch it.
 			activeDrawEnv.tpage = (code & 0x1FF);
 			activeDrawEnv.dtd = (code >> 9) & 1;
-			activeDrawEnv.dfe = (code >> 10) & 1;
 			break;
 		}
 		case 0x2:
