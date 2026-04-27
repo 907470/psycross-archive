@@ -16,6 +16,11 @@ typedef struct
 	int kc_start, kc_select;
 
 	int kc_dpad_left, kc_dpad_right, kc_dpad_up, kc_dpad_down;
+
+	/* Left analog stick — keyboard-driven. When any of these is held the
+	 * keyboard pad is forced into analog mode (id 0x73) so the game reads
+	 * pad->analog[2..3]. Right stick has no keyboard binding. */
+	int kc_axis_left_up, kc_axis_left_down, kc_axis_left_left, kc_axis_left_right;
 } PsyXKeyboardMapping;
 
 typedef struct

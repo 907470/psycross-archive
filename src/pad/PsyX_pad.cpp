@@ -33,6 +33,7 @@ extern "C" unsigned short g_PsyX_Pad_InputOverride = 0xFFFF;
 
 u_short PsyX_Pad_UpdateKeyboardInput();
 void	PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad);
+static bool PsyX_Pad_UpdateKeyboardLeftStick(u_char* outX, u_char* outY);
 
 // Initializes SDL controllers
 int PsyX_Pad_InitSystem()
@@ -269,19 +270,41 @@ void PsyX_Pad_InternalPadUpdates()
 			}
 
 			// Update keyboard for PAD
-			if ((g_activeKeyboardControllers & (1 << i)) && kbInputs != 0xffff)
+			if (g_activeKeyboardControllers & (1 << i))
 			{
-				pad->status = 0;	// PadStateStable?
+				u_char kb_lx, kb_ly;
+				bool wasd_held = PsyX_Pad_UpdateKeyboardLeftStick(&kb_lx, &kb_ly);
 
-				if (pad->id != 0x41)
+				if (wasd_held)
 				{
-					if(pad->id != 0x73)
-						eprintf("Port %d ANALOG: OFF\n", i + 1);
-
-					pad->id = 0x41; // force disable analog
+					/* WASD held: ensure analog mode so the game samples
+					 * pad->analog[2..3], then write the stick values. */
+					if (pad->id != 0x73)
+					{
+						eprintf("Port %d ANALOG: ON (keyboard)\n", i + 1);
+						pad->id = 0x73;
+					}
+					pad->analog[2] = kb_lx;
+					pad->analog[3] = kb_ly;
+					pad->status = 0;
 				}
 
-				*(u_short*)pad->buttons &= kbInputs;
+				if (kbInputs != 0xffff)
+				{
+					pad->status = 0;	// PadStateStable?
+
+					/* Don't force back to digital while WASD is held —
+					 * doing so would drop the analog values we just wrote. */
+					if (!wasd_held && pad->id != 0x41)
+					{
+						if (pad->id != 0x73)
+							eprintf("Port %d ANALOG: OFF\n", i + 1);
+
+						pad->id = 0x41; // force disable analog
+					}
+
+					*(u_short*)pad->buttons &= kbInputs;
+				}
 			}
 		}
 	}
@@ -387,6 +410,28 @@ void PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad)
 	pad->analog[1] = (rightY / 256) + 128;
 	pad->analog[2] = (leftX / 256) + 128;
 	pad->analog[3] = (leftY / 256) + 128;
+}
+
+/* Sample WASD into PSX-style left-stick byte values (centered at 128).
+ * Returns true if any axis key is held — caller uses this to flip the
+ * keyboard pad into analog mode. */
+static bool PsyX_Pad_UpdateKeyboardLeftStick(u_char* outX, u_char* outY)
+{
+	*outX = 128;
+	*outY = 128;
+
+	if (g_sdlKeyboardState == NULL)
+		return false;
+
+	const PsyXKeyboardMapping& mapping = g_cfg_keyboardMapping;
+	bool held = false;
+
+	if (g_sdlKeyboardState[mapping.kc_axis_left_left])  { *outX = 0;   held = true; }
+	if (g_sdlKeyboardState[mapping.kc_axis_left_right]) { *outX = 255; held = true; }
+	if (g_sdlKeyboardState[mapping.kc_axis_left_up])    { *outY = 0;   held = true; }
+	if (g_sdlKeyboardState[mapping.kc_axis_left_down])  { *outY = 255; held = true; }
+
+	return held;
 }
 
 u_short PsyX_Pad_UpdateKeyboardInput()

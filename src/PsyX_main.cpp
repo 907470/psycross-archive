@@ -249,6 +249,11 @@ static void PsyX_Sys_InitialiseInput()
 	g_cfg_keyboardMapping.kc_select = SDL_SCANCODE_SPACE;
 	g_cfg_keyboardMapping.kc_start = SDL_SCANCODE_RETURN;
 
+	g_cfg_keyboardMapping.kc_axis_left_up    = SDL_SCANCODE_W;
+	g_cfg_keyboardMapping.kc_axis_left_down  = SDL_SCANCODE_S;
+	g_cfg_keyboardMapping.kc_axis_left_left  = SDL_SCANCODE_A;
+	g_cfg_keyboardMapping.kc_axis_left_right = SDL_SCANCODE_D;
+
 	//----------------
 	g_cfg_controllerMapping.gc_square = SDL_CONTROLLER_BUTTON_X;
 	g_cfg_controllerMapping.gc_circle = SDL_CONTROLLER_BUTTON_B;
