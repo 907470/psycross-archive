@@ -62,6 +62,7 @@ GameOnTextInputHandler		g_cfg_gameOnTextInput = NULL;
 
 GameDebugKeysHandlerFunc	g_dbg_gameDebugKeys = NULL;
 GameDebugMouseHandlerFunc	g_dbg_gameDebugMouse = NULL;
+PsyXPostRenderOverlayFunc	g_psyx_postRenderOverlay = NULL;
 int							g_dbg_polygonSelected = 0;
 
 enum EPsxCounters
@@ -843,6 +844,9 @@ void PsyX_EndScene()
 	GR_EndScene();
 	
 	GR_StoreFrameBuffer(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
+
+	if (g_psyx_postRenderOverlay)
+		g_psyx_postRenderOverlay();
 
 	GR_SwapWindow();
 }

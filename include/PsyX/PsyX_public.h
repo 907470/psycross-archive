@@ -39,6 +39,7 @@ typedef struct
 typedef void(*GameDebugKeysHandlerFunc)(int nKey, char down);
 typedef void(*GameDebugMouseHandlerFunc)(int x, int y);
 typedef void(*GameOnTextInputHandler)(const char* buf);
+typedef void(*PsyXPostRenderOverlayFunc)(void);
 
 //------------------------------------------------------------------------
 
@@ -63,6 +64,13 @@ extern int							g_cfg_pgxpTextureCorrection;
 /* Debug inputs */
 extern GameDebugKeysHandlerFunc		g_dbg_gameDebugKeys;
 extern GameDebugMouseHandlerFunc	g_dbg_gameDebugMouse;
+
+/* Post-render overlay hook. If non-NULL, called inside PsyX_EndScene after
+ * GR_StoreFrameBuffer (so the VRAM mirror is already snapshotted and the
+ * overlay won't pollute it) and before GR_SwapWindow (so the overlay lands on
+ * the backbuffer that's about to be presented). The callback is responsible
+ * for saving/restoring any GL state it touches. */
+extern PsyXPostRenderOverlayFunc	g_psyx_postRenderOverlay;
 
 /* Usually called at the beginning of main function */
 extern void PsyX_Initialise(char* windowName, int screenWidth, int screenHeight, int fullscreen);
