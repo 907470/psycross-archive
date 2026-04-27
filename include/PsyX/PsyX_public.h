@@ -72,6 +72,13 @@ extern GameDebugMouseHandlerFunc	g_dbg_gameDebugMouse;
  * for saving/restoring any GL state it touches. */
 extern PsyXPostRenderOverlayFunc	g_psyx_postRenderOverlay;
 
+/* Pad input override. When != 0xFFFF, PsyX_Pad_InternalPadUpdates uses this
+ * value verbatim instead of polling SDL keyboard / gamepad — same convention
+ * as PsyX_Pad_UpdateKeyboardInput's return value (released bits set, pressed
+ * bits cleared). Set per-frame from the host loop to drive --bk2 movie
+ * replay; reset to 0xFFFF when no override is active. */
+extern unsigned short				g_PsyX_Pad_InputOverride;
+
 /* Usually called at the beginning of main function */
 extern void PsyX_Initialise(char* windowName, int screenWidth, int screenHeight, int fullscreen);
 

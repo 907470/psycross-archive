@@ -26,6 +26,11 @@ int						g_cfg_controllerToSlotMapping[MAX_CONTROLLERS] = { -1, -1 };
 PsyXController			g_controllers[MAX_CONTROLLERS];
 const u_char*			g_sdlKeyboardState = NULL;
 
+/* Default 0xFFFF = "no override, poll SDL normally". Host can stomp this
+ * per-frame to drive scripted input (--bk2 / future record). C linkage so
+ * openpete_core can extern it via PsyX/PsyX_public.h. */
+extern "C" unsigned short g_PsyX_Pad_InputOverride = 0xFFFF;
+
 u_short PsyX_Pad_UpdateKeyboardInput();
 void	PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad);
 
@@ -198,7 +203,18 @@ void PsyX_Pad_InternalPadUpdates()
 	if (g_padCommEnable == 0)
 		return;
 
-	kbInputs = PsyX_Pad_UpdateKeyboardInput();
+	/* --bk2 / future scripted-input path: when the host has set an override,
+	 * skip the SDL keyboard read entirely. Game-controller input is also
+	 * skipped below (we replace, don't AND), so the override wins cleanly
+	 * even if a real pad is plugged in. */
+	if (g_PsyX_Pad_InputOverride != 0xFFFF)
+	{
+		kbInputs = g_PsyX_Pad_InputOverride;
+	}
+	else
+	{
+		kbInputs = PsyX_Pad_UpdateKeyboardInput();
+	}
 
 	for (int i = 0; i < MAX_CONTROLLERS; i++)
 	{
@@ -207,6 +223,18 @@ void PsyX_Pad_InternalPadUpdates()
 		if (controller->padData)
 		{
 			pad = (LPPADRAW)controller->padData;
+
+			/* Override path: write kbInputs straight in. Skip the analog
+			 * Select+Start toggle (don't want a movie that holds those to
+			 * flip pad->id) and skip gamepad polling (the override is the
+			 * single source of truth). */
+			if (g_PsyX_Pad_InputOverride != 0xFFFF)
+			{
+				pad->status = 0;
+				if (pad->id != 0x41) pad->id = 0x41;
+				*(u_short*)pad->buttons = kbInputs;
+				continue;
+			}
 
 			PsyX_Pad_UpdateGameControllerInput(controller->gc, pad);
 
