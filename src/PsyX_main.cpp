@@ -36,7 +36,10 @@ int strcasecmp(const char* _l, const char* _r)
 	return tolower(*l) - tolower(*r);
 }
 #elif !defined(_WIN32)
-#include <strings.h>
+// PsyCross ships its own `include/psx/strings.h` (PSYQ surface) which shadows
+// the system `<strings.h>` on the include path, so we forward-declare the
+// POSIX symbol instead of relying on the header.
+extern "C" int strcasecmp(const char* s1, const char* s2);
 #endif
 
 SDL_Window* g_window = NULL;
