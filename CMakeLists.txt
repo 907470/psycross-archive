@@ -34,6 +34,14 @@ add_library(psycross_static STATIC
 set_target_properties(psycross_static PROPERTIES OUTPUT_NAME "psycross")
 target_include_directories(psycross_static PUBLIC "include" "include/psx")
 
+# The OpenPete bridge memcpys PSX P_TAG primitives verbatim into the
+# host-side extended P_TAG layout — vertex coords stay int16 (PSX
+# convention). PsyCross's PGXP path redefines `VERTTYPE` to half-float
+# and reinterprets those bytes as IEEE half, collapsing all geometry to
+# near-origin and producing a blank screen. Force PGXP off until the
+# bridge is taught to translate vertex bits per primitive type.
+target_compile_definitions(psycross_static PUBLIC USE_PGXP=0)
+
 find_package(SDL2 REQUIRED)
 target_link_libraries(psycross_static ${SDL2_LIBRARIES})
 target_include_directories(psycross_static PRIVATE ${SDL2_INCLUDE_DIRS})
