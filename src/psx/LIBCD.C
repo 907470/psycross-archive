@@ -355,12 +355,25 @@ int CdControl(u_char com, u_char * param, u_char * result)
 
 		break;
 	}
+	case CdlSetmode:
+		/* CdlModeSize0/1 can change sector size; we only support 2048-byte
+		 * data sectors so far. Accept the command silently — Spyro's title
+		 * sequence stalls otherwise waiting for ack. */
+		break;
+	case CdlNop:
+	case CdlPause:
+	case CdlStandby:
+	case CdlStop:
+	case CdlMute:
+	case CdlDemute:
+		/* Stateless cd-state commands. Acknowledge as success. */
+		break;
 	default:
 		eprinterr("Unhandled command 0x%02X!\n", com);
 		break;
 	}
 
-	return 0;
+	return 1;
 }
 
 int CdControlB(u_char com, u_char* param, u_char* result)
@@ -386,17 +399,33 @@ int CdControlB(u_char com, u_char* param, u_char* result)
 	{
 		CdlFILTER* cdf = (CdlFILTER*)param;
 		// TODO: set channel. Primarily used for CDDA/XA
+		ret = 1;
 		break;
 	}
 	case CdlSetmode:
 	{
 		// TODO: CdlModeSize0 and CdlModeSize1 can change things
-
-		eprinterr("Unimplemented 'CdlSetmode'!\n");
-
 		ret = 1;
 		break;
 	}
+	case CdlReadS:
+	case CdlReadN:
+	{
+		CdlLOC* cd = (CdlLOC*)param;
+		vfseek(&g_imageFile, CdPosToInt(cd) * g_cdSectorSize, SEEK_SET);
+		g_cdCurrentSector = CdPosToInt(cd);
+		readMode = RM_DATA;
+		ret = 1;
+		break;
+	}
+	case CdlNop:
+	case CdlPause:
+	case CdlStandby:
+	case CdlStop:
+	case CdlMute:
+	case CdlDemute:
+		ret = 1;
+		break;
 	default:
 		eprinterr("Unhandled command 0x%02X!\n", com);
 		break;
