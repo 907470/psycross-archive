@@ -27,8 +27,15 @@ void PsyX_XA_Pump(int maxSectors);
 /* Current playhead (absolute LBA, in sectors). 0 if inactive. */
 int  PsyX_XA_GetCurrentSector(void);
 
-/* Linear gain 0.0 .. 1.0 (or higher; OpenAL clamps). */
+/* Linear gain 0.0 .. 1.0 (or higher; OpenAL clamps). Ignored while a
+ * forced gain is active. */
 void PsyX_XA_SetVolume(float linear_gain);
+
+/* Override path — takes priority over PsyX_XA_SetVolume. Pass a
+ * negative value to release. While a forced gain is active, calls to
+ * PsyX_XA_SetVolume update the "would be" gain but don't change the
+ * AL source until the override is released. */
+void PsyX_XA_ForceGain(float linear_gain);
 
 #ifdef __cplusplus
 }

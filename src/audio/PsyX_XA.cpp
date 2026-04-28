@@ -69,7 +69,8 @@ struct XAState {
     int      channels    = 2;
     bool     bits_8      = false;
 
-    float    gain        = 1.0f;
+    float    gain         = 1.0f;
+    float    forced_gain  = -1.0f;   /* >=0 → overrides `gain` */
 } g_xa;
 
 inline int16_t clamp16(int32_t v) {
@@ -279,7 +280,18 @@ extern "C" int PsyX_XA_GetCurrentSector(void) { return g_xa.active ? g_xa.playhe
 extern "C" void PsyX_XA_SetVolume(float linear_gain)
 {
     g_xa.gain = linear_gain;
-    if (g_xa.source) alSourcef(g_xa.source, AL_GAIN, linear_gain);
+    if (g_xa.source && g_xa.forced_gain < 0.0f) {
+        alSourcef(g_xa.source, AL_GAIN, linear_gain);
+    }
+}
+
+extern "C" void PsyX_XA_ForceGain(float linear_gain)
+{
+    g_xa.forced_gain = linear_gain;
+    if (g_xa.source) {
+        float g = (linear_gain >= 0.0f) ? linear_gain : g_xa.gain;
+        alSourcef(g_xa.source, AL_GAIN, g);
+    }
 }
 
 extern "C" void PsyX_XA_Pump(int maxSectors)
