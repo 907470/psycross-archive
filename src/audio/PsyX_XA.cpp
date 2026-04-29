@@ -229,7 +229,8 @@ extern "C" void PsyX_XA_Init(void)
     alGenSources(1, &g_xa.source);
     alGenBuffers(kRingBuffers, g_xa.buffers);
     alSourcei(g_xa.source, AL_SOURCE_RELATIVE, AL_TRUE);
-    alSourcef(g_xa.source, AL_GAIN, g_xa.gain);
+    alSourcef(g_xa.source, AL_GAIN,
+              g_xa.forced_gain >= 0.0f ? g_xa.forced_gain : g_xa.gain);
     alSourcef(g_xa.source, AL_PITCH, 1.0f);
     g_xa.initialized = true;
 }
