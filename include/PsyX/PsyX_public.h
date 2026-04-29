@@ -130,6 +130,17 @@ extern void PsyX_EnableSwapInterval(int enable);
 /* Changes swap interval interval interval */
 extern void PsyX_SetSwapInterval(int interval);
 
+/* --- VRAM state-export (used by openpete save states) ---------------------- *
+ * The 1 MiB CPU-side mirror at `vram[VRAM_WIDTH * VRAM_HEIGHT]` is the
+ * source of truth for textures + framebuffer; the GPU texture is uploaded
+ * from it lazily via GR_UpdateVRAM(). PsyX_VRAM_Snapshot copies the mirror
+ * out, PsyX_VRAM_Restore copies bytes back in and marks the GPU upload
+ * dirty so the next frame picks up the restored contents. Pass exactly
+ * PsyX_VRAM_GetSize() bytes; smaller/larger calls return non-zero. */
+extern unsigned int PsyX_VRAM_GetSize(void);
+extern int  PsyX_VRAM_Snapshot(void* dst, unsigned int dst_size);
+extern int  PsyX_VRAM_Restore (const void* src, unsigned int src_size);
+
 #if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
 }
 #endif

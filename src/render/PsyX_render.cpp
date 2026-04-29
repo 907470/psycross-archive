@@ -473,6 +473,31 @@ void GR_EndScene()
 
 unsigned short vram[VRAM_WIDTH * VRAM_HEIGHT];
 
+/* See PsyX_public.h. The CPU-side `vram` mirror is authoritative — every
+ * write path (LoadImage, MoveImage, framebuffer copyback) goes through it
+ * and sets vram_need_update so GR_UpdateVRAM uploads the new bytes to the
+ * GL texture next frame. Restore replays the same handshake so the GPU
+ * picks up the snapshotted contents on the very next present. */
+extern "C" unsigned int PsyX_VRAM_GetSize(void)
+{
+	return (unsigned int)(VRAM_WIDTH * VRAM_HEIGHT * sizeof(unsigned short));
+}
+
+extern "C" int PsyX_VRAM_Snapshot(void* dst, unsigned int dst_size)
+{
+	if (!dst || dst_size != PsyX_VRAM_GetSize()) return -1;
+	memcpy(dst, vram, dst_size);
+	return 0;
+}
+
+extern "C" int PsyX_VRAM_Restore(const void* src, unsigned int src_size)
+{
+	if (!src || src_size != PsyX_VRAM_GetSize()) return -1;
+	memcpy(vram, src, src_size);
+	vram_need_update = 1;
+	return 0;
+}
+
 void GR_ResetDevice()
 {
 	GR_UpdateSwapIntervalState(0);
