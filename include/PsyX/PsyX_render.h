@@ -113,7 +113,12 @@
 #define TPAGE_WIDTH		(256)
 #define TPAGE_HEIGHT	(256)
 
-#define MAX_VERTEX_BUFFER_SIZE	(1 << (sizeof(ushort) * 8))
+/* Native ushort cap was 65k vertices (~1.3 MB). At ultrawide aspects with
+ * env-renderer SX-cull widening, gameplay frames can emit far more than
+ * that — overflow corrupts adjacent globals (g_splits[].debugText), causing
+ * a strlen segfault inside DrawSplit. Bump to 256k (~5 MB) so the
+ * env-cull widening at 21:9/32:9 has room. Indices stay int. */
+#define MAX_VERTEX_BUFFER_SIZE	(1 << 18)
 
 #pragma pack(push,1)
 typedef struct
