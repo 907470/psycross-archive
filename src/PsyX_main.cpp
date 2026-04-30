@@ -63,6 +63,7 @@ GameOnTextInputHandler		g_cfg_gameOnTextInput = NULL;
 GameDebugKeysHandlerFunc	g_dbg_gameDebugKeys = NULL;
 GameDebugMouseHandlerFunc	g_dbg_gameDebugMouse = NULL;
 PsyXPostRenderOverlayFunc	g_psyx_postRenderOverlay = NULL;
+float						g_psyx_render_aspect_factor = 1.0f;
 int							g_dbg_polygonSelected = 0;
 
 enum EPsxCounters

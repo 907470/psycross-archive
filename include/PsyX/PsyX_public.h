@@ -82,6 +82,20 @@ extern GameDebugMouseHandlerFunc	g_dbg_gameDebugMouse;
  * for saving/restoring any GL state it touches. */
 extern PsyXPostRenderOverlayFunc	g_psyx_postRenderOverlay;
 
+/* Hor+ widescreen aspect factor for the non-PGXP GL render path.
+ * Multiplies the effective horizontal extent of GR_Ortho2D in
+ * GR_SetOffscreenState (called per scene begin). 1.0f (default) =
+ * native 4:3-from-DISPENV behavior; values >1 widen the GL ortho range
+ * so geometry the GTE projects beyond the native 320/512 PSX plane is
+ * mapped across the SDL window instead of being clipped at the
+ * viewport edge.
+ *
+ * Crucially this does NOT touch DISPENV/DRAWENV VRAM widths, so
+ * GR_StoreFrameBuffer's blit-back stays at the native 512 and texture
+ * pages at x>=512 are not overwritten. Pair with a host-side widening
+ * of SetGeomOffset's x-component so the wider geometry is centred. */
+extern float g_psyx_render_aspect_factor;
+
 /* Pad input override. When != 0xFFFF, PsyX_Pad_InternalPadUpdates uses this
  * value verbatim instead of polling SDL keyboard / gamepad — same convention
  * as PsyX_Pad_UpdateKeyboardInput's return value (released bits set, pressed

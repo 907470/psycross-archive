@@ -1507,7 +1507,16 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 		GR_Ortho2D(-0.5f * emuScreenAspect * PSX_SCREEN_ASPECT, 0.5f * emuScreenAspect * PSX_SCREEN_ASPECT, 0.5f, -0.5f, -1.0f, 1.0f);
 		GR_Perspective3D(perspectiveFOV, 1.0f, 1.0f / (emuScreenAspect * PSX_SCREEN_ASPECT), perspectiveZNear, perspectiveZFar);
 #else
-		GR_Ortho2D(0, activeDispEnv.disp.w, activeDispEnv.disp.h, 0, -1.0f, 1.0f);
+		/* Hor+ widescreen: scale the GL ortho width by the host's
+		 * runtime aspect factor so geometry the GTE projects past
+		 * disp.w (because the host widened SetGeomOffset.x) is mapped
+		 * across the full SDL window instead of being clipped.
+		 * VRAM-facing operations (GR_StoreFrameBuffer, ClearImage,
+		 * etc.) keep using activeDispEnv.disp.w / activeDrawEnv.clip.w
+		 * untouched, so texture pages at x>=disp.w are unaffected. */
+		GR_Ortho2D(0,
+			(float)activeDispEnv.disp.w * g_psyx_render_aspect_factor,
+			activeDispEnv.disp.h, 0, -1.0f, 1.0f);
 #endif
 	}
 
