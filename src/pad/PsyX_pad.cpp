@@ -29,7 +29,9 @@ const u_char*			g_sdlKeyboardState = NULL;
 /* Default 0xFFFF = "no override, poll SDL normally". Host can stomp this
  * per-frame to drive scripted input (--bk2 / future record). C linkage so
  * openpete_core can extern it via PsyX/PsyX_public.h. */
-extern "C" unsigned short g_PsyX_Pad_InputOverride = 0xFFFF;
+extern "C" {
+unsigned short g_PsyX_Pad_InputOverride = 0xFFFF;
+}
 
 /* See PsyX_public.h. Returns the last-merged P1 pad bits (0xFFFF when no
  * pad buffer is registered yet — happens before the game calls PadInitDirect

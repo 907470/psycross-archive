@@ -4,6 +4,7 @@
 #include "PsyX/PsyX_public.h"
 
 #include <SDL_timer.h>
+#include <stdint.h>
 
 #ifdef DEBUG
 char scratchData[4096 + 8];
@@ -23,7 +24,11 @@ int StopCallback(void)
 
 int ResetCallback(void)
 {
-	int old = (int)vsync_callback;
+	/* PSYQ returns the previous callback as an int — sign-correct on PSX's
+	 * 32-bit MIPS, lossy on 64-bit hosts. Callers only use it as an opaque
+	 * "different from last time" sentinel, so the truncation is OK. Cast
+	 * through uintptr_t to silence the -fpermissive precision warning. */
+	int old = (int)(uintptr_t)vsync_callback;
 	vsync_callback = NULL;
 	return old;
 }
@@ -50,7 +55,7 @@ int VSync(int mode)
 
 int VSyncCallback(void(*f)(void))
 {
-	int old = (int)vsync_callback;
+	int old = (int)(uintptr_t)vsync_callback;  /* see ResetCallback */
 	vsync_callback = f;
 	return old;
 }
