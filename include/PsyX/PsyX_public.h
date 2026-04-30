@@ -52,6 +52,11 @@ typedef void(*PsyXPostRenderOverlayFunc)(void);
 extern "C" {
 #endif
 
+/* Forward decl so PsyX_GetPSXWidescreenMappedViewport's prototype below
+ * doesn't introduce a new (parameter-scoped) struct in C TUs that haven't
+ * already pulled in psx/libgte.h. The real definition lives there. */
+struct _RECT16;
+
 /* Mapped inputs */
 extern PsyXControllerMapping		g_cfg_controllerMapping;
 extern PsyXKeyboardMapping			g_cfg_keyboardMapping;
