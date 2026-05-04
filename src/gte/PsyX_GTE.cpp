@@ -6,6 +6,7 @@
 #include "psx/gtereg.h"
 
 #include <math.h>
+#include <string.h>  /* memset for the PGXP (sx,sy)→index map drain */
 
 
 
@@ -293,9 +294,79 @@ int g_pgxpTransformed = 0;
 float g_pgxpZOffset = 0.0f;
 float g_pgxpZScale = 1.0f;
 
+/* Content-keyed (sx,sy) → PGXP-index map. Bridges the batched-flow
+ * gap between psxrecomp's GTE emit (during scene traversal) and
+ * PsyCross's primitive consumer (DrawOTag at frame end) — see
+ * pgxp_defs.h `PGXP_GetIndexForXY` doc. Open-addressing linear-probe
+ * hash table; 32k slots ≈ 1.5x typical Spyro per-frame vertex count
+ * keeps load factor under 50%. Sentinel = vals[i] == 0xFFFF (real
+ * emits at index 0xFFFF return early in PGXP_EmitCacheData so don't
+ * collide with the sentinel). 64-step probe cap to bound worst-case
+ * insert/lookup cost; collisions past that drop silently (rare and
+ * benign — consumer falls back to no-PGXP path). */
+#define PGXP_XY_MAP_BITS  15
+#define PGXP_XY_MAP_SLOTS (1u << PGXP_XY_MAP_BITS)
+#define PGXP_XY_MAP_MASK  (PGXP_XY_MAP_SLOTS - 1u)
+#define PGXP_XY_PROBE_CAP 64
+static uint   g_pgxp_xy_keys[PGXP_XY_MAP_SLOTS];
+static ushort g_pgxp_xy_vals[PGXP_XY_MAP_SLOTS];
+static int    g_pgxp_xy_initialized = 0;
+
+static inline uint pgxp_xy_hash(uint k)
+{
+	// xorshift32 mix — uniform spread on int16 SXY pairs.
+	k ^= k >> 16;
+	k *= 0x7feb352du;
+	k ^= k >> 15;
+	k *= 0x846ca68bu;
+	k ^= k >> 16;
+	return k;
+}
+
+static void pgxp_xy_clear()
+{
+	// 0xFF byte fills both keys (any uint value) and vals (0xFFFF
+	// sentinel). One memset; cheap.
+	memset(g_pgxp_xy_keys, 0xFF, sizeof(g_pgxp_xy_keys));
+	memset(g_pgxp_xy_vals, 0xFF, sizeof(g_pgxp_xy_vals));
+	g_pgxp_xy_initialized = 1;
+}
+
+static void pgxp_xy_put(uint key, ushort index)
+{
+	if (!g_pgxp_xy_initialized) pgxp_xy_clear();
+	uint h = pgxp_xy_hash(key);
+	for (int i = 0; i < PGXP_XY_PROBE_CAP; i++)
+	{
+		uint slot = (h + (uint)i) & PGXP_XY_MAP_MASK;
+		if (g_pgxp_xy_vals[slot] == 0xFFFFu || g_pgxp_xy_keys[slot] == key)
+		{
+			g_pgxp_xy_keys[slot] = key;
+			g_pgxp_xy_vals[slot] = index;
+			return;
+		}
+	}
+	// 64 collisions hit; drop. Consumer side falls back to no-PGXP path.
+}
+
+ushort PGXP_GetIndexForXY(uint key)
+{
+	if (!g_pgxp_xy_initialized) return 0xFFFFu;
+	uint h = pgxp_xy_hash(key);
+	for (int i = 0; i < PGXP_XY_PROBE_CAP; i++)
+	{
+		uint slot = (h + (uint)i) & PGXP_XY_MAP_MASK;
+		ushort v = g_pgxp_xy_vals[slot];
+		if (v == 0xFFFFu)               return 0xFFFFu;  // probe terminator
+		if (g_pgxp_xy_keys[slot] == key) return v;
+	}
+	return 0xFFFFu;
+}
+
 void PGXP_ClearCache()
 {
 	g_pgxpVertexIndex = 0;
+	pgxp_xy_clear();
 }
 
 ushort PGXP_GetIndex(int checkTransform)
@@ -319,6 +390,11 @@ ushort PGXP_EmitCacheData(PGXPVData* newData)
 
 	g_pgxpCache[nextIndex] = *newData;
 	g_pgxpTransformed = 1;
+
+	// Also publish to the content-keyed map so the openpete bridge can
+	// resolve a primitive's pgxp_index from its vertex SXY at host
+	// P_TAG synthesis time. Most-recent emit wins per (sx,sy) bucket.
+	pgxp_xy_put(newData->lookup, nextIndex);
 	return nextIndex;
 }
 
