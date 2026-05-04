@@ -1161,11 +1161,13 @@ void GR_SetupClipMode(const RECT16* rect, int enable)
 	if (!scissorOn)
 		return;
 
-#if USE_PGXP
-	const float emuScreenAspect = 1.0f / (PSX_SCREEN_ASPECT * (float)g_windowWidth / (float)g_windowHeight);
-#else
+	// emuScreenAspect compensated the scissor for window-aspect under upstream
+	// PsyCross's PGXP design (which embedded window aspect in the projection
+	// matrix). openpete's GR_SetOffscreenState now uses content-based ortho
+	// for both USE_PGXP states (with Hor+ widening via
+	// g_psyx_render_aspect_factor), so the scissor must match: no
+	// window-aspect compensation in either path.
 	const float emuScreenAspect = 1.0f;
-#endif
 
 	const float psxScreenWInv = 1.0f / (float)activeDispEnv.disp.w;
 	const float psxScreenHInv = 1.0f / (float)activeDispEnv.disp.h;
@@ -1502,9 +1504,20 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 		const float perspectiveZNear = 0.25f;
 		const float perspectiveZFar = 1000.0f;
 
+		// PGXP-on ortho mirrors the off-path's content-based mapping.
+		// Vertex coords have already been normalized by disp.w via
+		// ScreenCoordsToEmulator (vertex.x = raw/disp.w - 0.5), so the
+		// horizontal extent runs [-0.5, g_psyx_render_aspect_factor - 0.5]
+		// when Hor+ widening is active. Map that to NDC [-1, +1] so the
+		// cache-miss fallback renders identically to USE_PGXP=0 — gameplay
+		// state must be presentation-independent. Window-aspect handling
+		// (pillarbox / letterbox) is owned by the GL viewport, not the
+		// projection matrix; mixing the two is what made widescreen look
+		// like 4:3 with pillarboxing under the upstream PsyCross formula.
 		const float emuScreenAspect = (float)(g_windowWidth) / (float)(g_windowHeight);
+		const float horExtent = g_psyx_render_aspect_factor;
 
-		GR_Ortho2D(-0.5f * emuScreenAspect * PSX_SCREEN_ASPECT, 0.5f * emuScreenAspect * PSX_SCREEN_ASPECT, 0.5f, -0.5f, -1.0f, 1.0f);
+		GR_Ortho2D(-0.5f, horExtent - 0.5f, 0.5f, -0.5f, -1.0f, 1.0f);
 		GR_Perspective3D(perspectiveFOV, 1.0f, 1.0f / (emuScreenAspect * PSX_SCREEN_ASPECT), perspectiveZNear, perspectiveZFar);
 #else
 		/* Hor+ widescreen: scale the GL ortho width by the host's

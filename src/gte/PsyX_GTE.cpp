@@ -413,15 +413,18 @@ int GTE_RotTransPers(int idx, int lm)
 	temp.py = fMAC2 * one_by_v * g_pgxpZScale + g_pgxpZOffset;
 	temp.pz = fMAC3 * one_by_v * g_pgxpZScale + g_pgxpZOffset;
 
-	// calculate projected values for cache
-	temp.x = (double(C2_OFX) + double(float(C2_IR1) * float(h_over_sz3))) / float(1 << 16);
-	temp.y = (double(C2_OFY) + double(float(C2_IR2) * float(h_over_sz3))) / float(1 << 16);
-	temp.z = float(max(C2_SZ3, C2_H / 2)) / float(1 << 16);
+	// Lookup-key fields must equal the int16 SX2/SY2/SZ3 the integer GTE
+	// path produced above — that's what the PSX-side primitive stores and
+	// what the GPU-consumer hash reads. Don't re-derive from the float
+	// path; just mirror the integer values byte-for-byte.
+	temp.x = (VERTTYPE)C2_SX2;
+	temp.y = (VERTTYPE)C2_SY2;
+	temp.z = (VERTTYPE)C2_SZ3;
 
 	g_FP_SXYZ2 = temp;
 
 	PGXPVData vdata;
-	vdata.lookup = PGXP_LOOKUP_VALUE(temp.x, temp.y);		// hash short values
+	vdata.lookup = PGXP_LOOKUP_VALUE(temp.x, temp.y);		// hash int16 SXY (matches PSX-side primitive)
 
 	// FIXME: actually we scaling here entire geometry, is that correct?
 	vdata.px = temp.px;

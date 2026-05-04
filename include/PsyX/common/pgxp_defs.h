@@ -4,27 +4,28 @@
 #include "PsyX/PsyX_config.h"
 
 #if USE_PGXP
-#include "PsyX/common/half_float.h"
+#include "PsyX/common/half_float.h"  /* still needed by the (unused) DVECTORF type */
 
-// Helpful macro
+/* VERTTYPE is `short` unconditionally. Upstream PsyCross declared it as
+ * `half` in C++ so GTE-emitted sub-pixel floats could be packed into the
+ * primitive's vertex slot — but openpete's recompiled MIPS code writes
+ * int16 PSX-screen-space coords directly into primitives via the
+ * psyq_thunks.cpp DrawOTag bridge. Reinterpreting those bytes as IEEE
+ * half collapsed all geometry to the origin (commit 42decab). The PGXP
+ * cache hash (PGXP_LOOKUP_VALUE) is keyed on the 16-bit pattern of the
+ * screen coord, which matches between the GTE emit side (int16 SX2/SY2
+ * after Lm_G clamp) and the GPU consumer side (int16 read out of the
+ * PSX-side primitive) — so short works on both ends. Sub-pixel
+ * precision rides in the parallel float px/py/pz fields. */
 #define PGXP_LOOKUP_VALUE(x, y) (*(u_short*)&(x) | (*(u_short*)&(y) << 16))
 
-//-------------------------------------
-
-// in C++, VERTTYPE can be declared as half
-// use `_HF` to convert to half whenever you in C mode.
-#if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
-typedef half VERTTYPE;
-#define _HF(x) x
-#else
 typedef short VERTTYPE;
-#define _HF(x) to_half_float(x)
-#endif
+#define _HF(x) (x)
 
 typedef struct
 {
-	float px, py, pz;	// 32 bit values
-	VERTTYPE x, y, z;	// 16 bit values (for lookup and backwards compat if not found in cache)
+	float px, py, pz;	// 32 bit values — sub-pixel precision carrier
+	VERTTYPE x, y, z;	// 16 bit values for lookup hash (must match PSX-side int16 SXY)
 } PGXPVector3D;
 
 typedef struct

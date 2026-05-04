@@ -34,13 +34,15 @@ add_library(psycross_static STATIC
 set_target_properties(psycross_static PROPERTIES OUTPUT_NAME "psycross")
 target_include_directories(psycross_static PUBLIC "include" "include/psx")
 
-# The OpenPete bridge memcpys PSX P_TAG primitives verbatim into the
-# host-side extended P_TAG layout — vertex coords stay int16 (PSX
-# convention). PsyCross's PGXP path redefines `VERTTYPE` to half-float
-# and reinterprets those bytes as IEEE half, collapsing all geometry to
-# near-origin and producing a blank screen. Force PGXP off until the
-# bridge is taught to translate vertex bits per primitive type.
-target_compile_definitions(psycross_static PUBLIC USE_PGXP=0)
+# PGXP enabled. VERTTYPE is now `short` unconditionally (see
+# include/PsyX/common/pgxp_defs.h) so the OpenPete bridge's verbatim
+# memcpy of PSX P_TAG payloads doesn't collide with PsyCross's vertex
+# slot layout. Sub-pixel precision is carried in the parallel float
+# px/py/pz fields of PGXPVData; the cache hash is keyed on the int16
+# SXY pattern that matches between the GTE emit side and the GPU
+# consumer side. Cache population for gameplay GTE ops is wired in
+# pcsx_redux_compat.h's PGXP_pushSXYZ2s adapter.
+target_compile_definitions(psycross_static PUBLIC USE_PGXP=1)
 
 find_package(SDL2 REQUIRED)
 target_link_libraries(psycross_static ${SDL2_LIBRARIES})
