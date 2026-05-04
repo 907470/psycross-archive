@@ -63,17 +63,6 @@ int		PGXP_GetCacheData(PGXPVData* out, uint lookup, ushort indexhint /* = 0xFFFF
 /* used by primitive setup */
 ushort	PGXP_GetIndex(int checkTransform);
 
-/* Content-keyed lookup for the openpete bridge. Spyro's batched flow
- * (GTE-then-DrawOTag rather than interleaved emit-and-consume) means
- * the consumer's "current PGXP index" is far past the emit indices of
- * the primitive being processed. The bridge consults this map at host
- * P_TAG synthesis time: given a primitive's vertex packed (sx,sy)
- * key, returns the most-recent PGXP cache index emitted for that key,
- * or 0xFFFF if not found (consumer falls back to "no PGXP" path).
- * Map is populated automatically by PGXP_EmitCacheData (uses
- * newData->lookup as the key) and cleared by PGXP_ClearCache. */
-ushort	PGXP_GetIndexForXY(uint packed_sxy);
-
 #if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
 }
 #endif

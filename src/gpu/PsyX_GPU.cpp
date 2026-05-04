@@ -183,7 +183,7 @@ inline void ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, us
 
 	PGXPVData vd;
 	if (gteidx != 0xffff &&
-		g_cfg_pgxpTextureCorrection && 
+		g_cfg_pgxpTextureCorrection &&
 		PGXP_GetCacheData(&vd, lookup, gteidx + lookupOfs))
 	{
 		v->x = vd.px;
