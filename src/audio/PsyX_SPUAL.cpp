@@ -74,6 +74,317 @@ static SDL_mutex* g_SpuMutex = NULL;
 static int g_spuInit = 0;
 static int s_spuMallocVal = 0;
 
+
+/* The SPU's two level generators, per psx-spx "SPU Volume and ADSR
+ * Generator": a voice's ADSR envelope, whose level is the voice's ENVX
+ * register, and the sweep of a volume register (a voice's left or right
+ * volume, the main left or right volume), whose level is the register's
+ * current volume.
+ *
+ * The SPU owns the clock and the register latches; these functions own the
+ * level. The SPU calls, for each 44.1 kHz output sample:
+ *   1. PsyX_SPUEnv_Tick for every voice whose phase is not
+ *      PSYX_SPU_ENV_OFF, and PsyX_SPUSweep_Tick for every volume register;
+ *   2. then PsyX_SPUEnv_KeyOff for a voice whose key-off store came since
+ *      the previous sample, then PsyX_SPUEnv_KeyOn for a voice whose key-on
+ *      store came since the previous sample.
+ * Register writes of the ADSR words and of the volume registers call
+ * PsyX_SPUEnv_SetADSR and PsyX_SPUSweep_Write at the store. A voice whose
+ * playback head leaves an END block without REPEAT is silenced with
+ * PsyX_SPUEnv_Silence. A zero-filled struct is the power-on state: phase
+ * off, level 0, register words 0.
+ *
+ * The struct members after the public ones are the implementation's own;
+ * the SPU copies the structs whole into save states and reads the public
+ * members only through the functions. */
+
+#include <stdint.h>
+
+
+/** @brief The ADSR phase of a voice envelope. */
+typedef enum
+{
+	PSYX_SPU_ENV_OFF     = 0,
+	PSYX_SPU_ENV_ATTACK  = 1,
+	PSYX_SPU_ENV_DECAY   = 2,
+	PSYX_SPU_ENV_SUSTAIN = 3,
+	PSYX_SPU_ENV_RELEASE = 4
+} PsyX_SPUEnvPhase;
+
+/** @brief One voice's ADSR envelope generator. */
+typedef struct
+{
+	uint16_t adsr1;     /* ADSR register, low halfword, as last written */
+	uint16_t adsr2;     /* ADSR register, high halfword, as last written */
+	int16_t  level;     /* ENVX */
+	uint8_t  phase;     /* PsyX_SPUEnvPhase */
+	uint8_t  impl8;     /* implementation state from here on */
+	uint32_t impl[5];
+} PsyX_SPUEnvelope;
+
+/** @brief The sweep generator of one volume register. */
+typedef struct
+{
+	uint16_t reg;       /* the volume register as last written */
+	int16_t  level;     /* the current volume */
+	uint8_t  sweeping;  /* the register is in sweep mode */
+	uint8_t  impl8[3];  /* implementation state from here on */
+	uint32_t impl[4];
+} PsyX_SPUSweep;
+
+/** @brief Store the ADSR register pair; the envelope uses the words from this store on.
+ * @param e The envelope.
+ * @param adsr1 Low halfword (1F801C08h + voice * 10h).
+ * @param adsr2 High halfword (1F801C0Ah + voice * 10h). */
+static inline void PsyX_SPUEnv_SetADSR(PsyX_SPUEnvelope* e, uint16_t adsr1, uint16_t adsr2);
+
+/** @brief Apply a key-on at the sample it takes effect.
+ * @param e The envelope. */
+static inline void PsyX_SPUEnv_KeyOn(PsyX_SPUEnvelope* e);
+
+/** @brief Apply a key-off at the sample it takes effect.
+ * @param e The envelope. */
+static inline void PsyX_SPUEnv_KeyOff(PsyX_SPUEnvelope* e);
+
+/** @brief Run the envelope for one 44.1 kHz sample.
+ * @param e The envelope; its phase is not PSYX_SPU_ENV_OFF.
+ * @return The level after the sample (ENVX). */
+static inline int16_t PsyX_SPUEnv_Tick(PsyX_SPUEnvelope* e);
+
+/** @brief Stop the envelope: phase off, level 0 (the voice's sample ended).
+ * @param e The envelope. */
+static inline void PsyX_SPUEnv_Silence(PsyX_SPUEnvelope* e);
+
+/** @brief The envelope's level, the voice's ENVX.
+ * @param e The envelope.
+ * @return The level. */
+static inline int16_t PsyX_SPUEnv_Level(const PsyX_SPUEnvelope* e);
+
+/** @brief The envelope's ADSR phase.
+ * @param e The envelope.
+ * @return The phase. */
+static inline PsyX_SPUEnvPhase PsyX_SPUEnv_Phase(const PsyX_SPUEnvelope* e);
+
+/** @brief Store a volume register: direct mode sets the level, sweep mode starts the sweep from the current level.
+ * @param s The sweep.
+ * @param reg The register value. */
+static inline void PsyX_SPUSweep_Write(PsyX_SPUSweep* s, uint16_t reg);
+
+/** @brief Run the sweep for one 44.1 kHz sample; no change in direct mode.
+ * @param s The sweep. */
+static inline void PsyX_SPUSweep_Tick(PsyX_SPUSweep* s);
+
+/** @brief The current volume, the value the register's current-volume read returns.
+ * @param s The sweep.
+ * @return The level. */
+static inline int16_t PsyX_SPUSweep_Level(const PsyX_SPUSweep* s);
+
+/* PsyX_SPUEnvelope.cpp - the SPU's level generators: a voice's ADSR
+ * envelope (ENVX) and the sweep of a volume register (VOLX, MVOLX).
+ *
+ * Both generators share one stepping rule. A phase or a sweep register
+ * gives a 5-bit shift, a 2-bit step value, a linear or exponential mode and
+ * a direction. Every 44.1 kHz sample a 16-bit counter gains an increment;
+ * when its bit 15 is set the counter clears and the level moves by one
+ * step. The shift sizes both: shifts below 11 scale the step up and step
+ * every sample, shifts above 11 keep the base step and halve the increment
+ * per unit. The exponential increase slows once the level is at 6000h or
+ * above; the exponential decrease scales the step by level / 8000h.
+ *
+ * Measured behaviour the stepping rule alone does not state: a store to
+ * either ADSR word clears the step counter, and the new words apply from
+ * the next sample in whatever phase the envelope is; a sweep whose
+ * direction bit is decrease takes one step and then holds its level. */
+
+namespace {
+
+/** @brief The stepping parameters of one envelope phase or one sweep register. */
+struct StepRule
+{
+	unsigned shift;    /* 0..1Fh */
+	unsigned step;     /* 0..3 */
+	bool exponential;
+	bool decrease;     /* the direction bit */
+	bool negative;     /* the sweep phase bit; false for ADSR phases */
+};
+
+/** @brief Advance a level by one sample under a stepping rule.
+ *
+ * The counter gains the rule's increment; when its bit 15 sets, the counter
+ * clears and the level moves by the step and saturates. A rule whose shift
+ * and step bits are all ones never steps.
+ * @param r The rule.
+ * @param level The level, updated in place.
+ * @param counter The step counter, updated in place.
+ * @return true when the level stepped this sample. */
+inline bool advance(const StepRule& r, int32_t& level, uint32_t& counter)
+{
+	const bool frozen = ((r.shift << 2) | r.step) == 0x7Fu;
+	int32_t step = 7 - (int32_t)r.step;
+	if (r.decrease != r.negative)
+		step = ~step;                                    /* +7..+4 becomes -8..-5 */
+	step *= (int32_t)1 << (r.shift < 11 ? 11 - r.shift : 0);
+	uint32_t inc = 0x8000u >> (r.shift > 11 ? r.shift - 11 : 0);
+
+	if (r.exponential && !r.decrease && level >= 0x6000)
+	{
+		if (r.shift < 10)
+			step /= 4;
+		else if (r.shift >= 11)
+			inc >>= 2;
+		else
+		{
+			step /= 2;
+			inc >>= 1;
+		}
+	}
+	else if (r.exponential && r.decrease)
+		step = (int32_t)(((int64_t)step * level) >> 15);   /* floor */
+
+	if (!frozen && inc == 0)
+		inc = 1;
+	counter += inc;
+	if ((counter & 0x8000u) == 0)
+		return false;
+	counter = 0;
+
+	int32_t next = level + step;
+	if (!r.decrease)
+		next = next < -0x8000 ? -0x8000 : (next > 0x7FFF ? 0x7FFF : next);
+	else if (r.negative)
+		next = next < -0x8000 ? -0x8000 : (next > 0 ? 0 : next);
+	else if (next < 0)
+		next = 0;
+	level = next;
+	return true;
+}
+
+/** @brief The stepping rule of an envelope's current phase, read from its ADSR words.
+ * @param e The envelope; its phase is not off.
+ * @return The rule. */
+inline StepRule phase_rule(const PsyX_SPUEnvelope* e)
+{
+	const unsigned a1 = e->adsr1, a2 = e->adsr2;
+	switch (e->phase)
+	{
+	case PSYX_SPU_ENV_ATTACK:
+		return { (a1 >> 10) & 0x1Fu, (a1 >> 8) & 3u, (a1 & 0x8000u) != 0, false, false };
+	case PSYX_SPU_ENV_DECAY:
+		return { (a1 >> 4) & 0xFu, 0u, true, true, false };
+	case PSYX_SPU_ENV_SUSTAIN:
+		return { (a2 >> 8) & 0x1Fu, (a2 >> 6) & 3u, (a2 & 0x8000u) != 0, (a2 & 0x4000u) != 0, false };
+	default:
+		return { a2 & 0x1Fu, 0u, (a2 & 0x20u) != 0, true, false };
+	}
+}
+
+/** @brief The step counter of an envelope.
+ * @param e The envelope.
+ * @return Its counter word. */
+inline uint32_t& env_counter(PsyX_SPUEnvelope* e)
+{
+	return e->impl[0];
+}
+
+/** @brief The step counter of a sweep.
+ * @param s The sweep.
+ * @return Its counter word. */
+inline uint32_t& sweep_counter(PsyX_SPUSweep* s)
+{
+	return s->impl[0];
+}
+
+} // namespace
+
+static inline void PsyX_SPUEnv_SetADSR(PsyX_SPUEnvelope* e, uint16_t adsr1, uint16_t adsr2)
+{
+	e->adsr1 = adsr1;
+	e->adsr2 = adsr2;
+	env_counter(e) = 0;
+}
+
+static inline void PsyX_SPUEnv_KeyOn(PsyX_SPUEnvelope* e)
+{
+	e->phase = PSYX_SPU_ENV_ATTACK;
+	e->level = 0;
+	env_counter(e) = 0;
+}
+
+static inline void PsyX_SPUEnv_KeyOff(PsyX_SPUEnvelope* e)
+{
+	if (e->phase == PSYX_SPU_ENV_OFF)
+		return;
+	e->phase = PSYX_SPU_ENV_RELEASE;
+	env_counter(e) = 0;
+}
+
+static inline int16_t PsyX_SPUEnv_Tick(PsyX_SPUEnvelope* e)
+{
+	if (e->phase == PSYX_SPU_ENV_OFF)
+		return e->level;
+	int32_t level = e->level;
+	advance(phase_rule(e), level, env_counter(e));
+	e->level = (int16_t)level;
+
+	if (e->phase == PSYX_SPU_ENV_ATTACK && level >= 0x7FFF)
+	{
+		e->phase = PSYX_SPU_ENV_DECAY;
+		env_counter(e) = 0;
+	}
+	else if (e->phase == PSYX_SPU_ENV_DECAY && level <= (int32_t)(((e->adsr1 & 0xFu) + 1) << 11))
+	{
+		e->phase = PSYX_SPU_ENV_SUSTAIN;
+		env_counter(e) = 0;
+	}
+	return e->level;
+}
+
+static inline void PsyX_SPUEnv_Silence(PsyX_SPUEnvelope* e)
+{
+	e->phase = PSYX_SPU_ENV_OFF;
+	e->level = 0;
+	env_counter(e) = 0;
+}
+
+static inline int16_t PsyX_SPUEnv_Level(const PsyX_SPUEnvelope* e)
+{
+	return e->level;
+}
+
+static inline PsyX_SPUEnvPhase PsyX_SPUEnv_Phase(const PsyX_SPUEnvelope* e)
+{
+	return (PsyX_SPUEnvPhase)e->phase;
+}
+
+static inline void PsyX_SPUSweep_Write(PsyX_SPUSweep* s, uint16_t reg)
+{
+	s->reg = reg;
+	sweep_counter(s) = 0;
+	s->impl8[0] = 0;                             /* not holding */
+	s->sweeping = (reg & 0x8000u) != 0;
+	if (!s->sweeping)
+		s->level = (int16_t)(uint16_t)(reg << 1);   /* bits 0-14 hold the volume / 2 */
+}
+
+static inline void PsyX_SPUSweep_Tick(PsyX_SPUSweep* s)
+{
+	if (!s->sweeping || s->impl8[0])
+		return;
+	const unsigned r = s->reg;
+	const StepRule rule = { (r >> 2) & 0x1Fu, r & 3u, (r & 0x4000u) != 0, (r & 0x2000u) != 0, (r & 0x1000u) != 0 };
+	int32_t level = s->level;
+	const bool stepped = advance(rule, level, sweep_counter(s));
+	s->level = (int16_t)level;
+	if (stepped && rule.decrease)
+		s->impl8[0] = 1;
+}
+
+static inline int16_t PsyX_SPUSweep_Level(const PsyX_SPUSweep* s)
+{
+	return s->level;
+}
+
+
 typedef struct
 {
 	SpuVoiceAttr attr;	// .voice is Id of this channel
@@ -83,11 +394,112 @@ typedef struct
 	ushort sampledirty;
 	ushort reverb;
 	int keyed_on;       // 1 once SetKey(SPU_ON,...) fired; cleared by SetKey(SPU_OFF,...)
+
+	// ADSR envelope state (deterministic, OpenAL-independent).
+	uint16_t  adsr1;        // ADSR register words as PSYQ packs them
+	uint16_t  adsr2;
+	uint8_t   adsr_phase;   // PsyX_SPUEnvPhase
+	int16_t  adsr_volume;  // current envelope output [-32768..32767]
+	PsyX_SPUEnvelope env;
+
+	// One-shot ADPCM auto-key-off (mirrors hardware: loop_end+!loop_repeat
+	// in any block forces voice to Off). At KeyOn we walk SPU memory from
+	// attr.addr until the first loop_end block and compute duration in
+	// output samples scaled by pitch. Looping samples (loop_end+
+	// loop_repeat) leave one_shot_samples_remaining == -1.
+	int32_t one_shot_samples_remaining; // -1 = looping / no auto-off
 } SPUALVoice;
 
 const int s_spuVoiceCount = 24;
 
 SPUALVoice	g_SpuVoices[s_spuVoiceCount];
+
+/* The voice's envelope is the PsyX_SPUEnv generator above. adsr_phase and
+ * adsr_volume mirror its phase and level after every call; the voice code
+ * stores phase off when a one-shot sample ends, which silences the
+ * generator, and writes adsr1/adsr2 from the attribute calls, which are
+ * stored before the next sample. A release that reaches level 0 ends in
+ * phase off, the state the voice allocation reads as free. */
+static void SPUAL_Voice_EnvPull(SPUALVoice* v)
+{
+	if (v->adsr_phase == PSYX_SPU_ENV_OFF && PsyX_SPUEnv_Phase(&v->env) != PSYX_SPU_ENV_OFF)
+		PsyX_SPUEnv_Silence(&v->env);
+	if (v->env.adsr1 != v->adsr1 || v->env.adsr2 != v->adsr2)
+		PsyX_SPUEnv_SetADSR(&v->env, v->adsr1, v->adsr2);
+}
+
+static void SPUAL_Voice_EnvPush(SPUALVoice* v)
+{
+	if (PsyX_SPUEnv_Phase(&v->env) == PSYX_SPU_ENV_RELEASE && PsyX_SPUEnv_Level(&v->env) == 0)
+		PsyX_SPUEnv_Silence(&v->env);
+	v->adsr_volume = PsyX_SPUEnv_Level(&v->env);
+	v->adsr_phase = (uint8_t)PsyX_SPUEnv_Phase(&v->env);
+}
+
+static void SPUAL_Voice_EnvTick(SPUALVoice* v)
+{
+	SPUAL_Voice_EnvPull(v);
+	PsyX_SPUEnv_Tick(&v->env);
+	SPUAL_Voice_EnvPush(v);
+}
+
+static void SPUAL_Voice_EnvKeyOn(SPUALVoice* v)
+{
+	PsyX_SPUEnv_SetADSR(&v->env, v->adsr1, v->adsr2);
+	PsyX_SPUEnv_KeyOn(&v->env);
+	SPUAL_Voice_EnvPush(v);
+}
+
+static void SPUAL_Voice_EnvKeyOff(SPUALVoice* v)
+{
+	SPUAL_Voice_EnvPull(v);
+	PsyX_SPUEnv_KeyOff(&v->env);
+	SPUAL_Voice_EnvPush(v);
+}
+
+// Walk ADPCM blocks from `start_addr` (in SPU RAM, byte offset) until
+// the first block with loop_end set. Compute duration in *output*
+// samples (post-pitch). Returns -1 if the loop_end block also has
+// loop_repeat (sound is looping; no auto-off) or if pitch is zero
+// (paused; treat as looping).
+static int32_t SPUAL_ScanOneShotSamples(uint32_t start_addr, uint16_t pitch)
+{
+	const int BLOCK_SIZE = 16;
+	const int SAMPLES_PER_BLOCK = 28;
+	const int MAX_BLOCKS = SPU_MEMSIZE / BLOCK_SIZE;
+	if (pitch == 0)
+		return -1;
+	uint32_t addr = start_addr;
+	int blocks = 0;
+	for (int i = 0; i < MAX_BLOCKS; i++)
+	{
+		if (addr + BLOCK_SIZE > SPU_MEMSIZE) break;
+		uint8_t flags = s_SpuMemory.samplemem[addr + 1];
+		blocks++;
+		if (flags & 0x01) // loop_end
+		{
+			if (flags & 0x02) // loop_repeat → infinite
+				return -1;
+			// One-shot end. Total decoder samples = blocks * 28; output
+			// samples = decoder * 4096 / pitch.
+			uint64_t decoder_samples = (uint64_t)blocks * SAMPLES_PER_BLOCK;
+			uint64_t out_samples = (decoder_samples * 4096ULL) / (uint64_t)pitch;
+			if (out_samples > 0x7FFFFFFFULL) out_samples = 0x7FFFFFFFULL;
+			return (int32_t)out_samples;
+		}
+		addr += BLOCK_SIZE;
+	}
+	// Walked off SPU RAM without finding a loop_end. Treat as looping.
+	return -1;
+}
+
+static void SPUAL_Voice_KeyOn(SPUALVoice* v)
+{
+	SPUAL_Voice_EnvKeyOn(v);
+	v->one_shot_samples_remaining =
+		SPUAL_ScanOneShotSamples(v->attr.addr, v->attr.pitch);
+}
+
 ALCdevice*	g_ALCdevice = NULL;
 ALCcontext* g_ALCcontext = NULL;
 int			g_SPUMuted = 0;
@@ -621,13 +1033,75 @@ void PsyX_SPUAL_GetVoicePitch(int vNum, u_short* pitch)
 	*pitch = g_SpuVoices[vNum].attr.pitch;
 }
 
+// Pack PSYQ-style ADSR fields (ar/dr/sr/rr/sl plus a_mode/s_mode/r_mode)
+// into PSX hardware ADSR1/ADSR2 register words. Conversion is best-
+// effort: PSYQ exposes a more abstract API than the raw register
+// bits, so we reconstruct attack_exponential/sustain_direction/etc.
+// from the SPU_VOICE_LINEAR*/EXP* mode constants.
+static void SPUAL_PackADSR(SPUALVoice* voice, const SpuVoiceAttr* a)
+{
+	if (a->mask & SPU_VOICE_ADSR_ADSR1) voice->adsr1 = a->adsr1;
+	if (a->mask & SPU_VOICE_ADSR_ADSR2) voice->adsr2 = a->adsr2;
+
+	// Attack: only the rate is configurable per-field; SPU_VOICE_ADSR_AMODE
+	// chooses linear vs exponential.
+	if (a->mask & SPU_VOICE_ADSR_AR)
+	{
+		voice->adsr1 = (uint16_t)((voice->adsr1 & ~(0x7F << 8))
+		                    | ((a->ar & 0x7F) << 8));
+	}
+	if (a->mask & SPU_VOICE_ADSR_AMODE)
+	{
+		bool exp = (a->a_mode == SPU_VOICE_EXPIncN || a->a_mode == SPU_VOICE_EXPIncR);
+		voice->adsr1 = (uint16_t)((voice->adsr1 & ~(1u << 15))
+		                    | ((exp ? 1u : 0u) << 15));
+	}
+	if (a->mask & SPU_VOICE_ADSR_DR)
+	{
+		voice->adsr1 = (uint16_t)((voice->adsr1 & ~(0xF << 4))
+		                    | ((a->dr & 0xF) << 4));
+	}
+	if (a->mask & SPU_VOICE_ADSR_SL)
+	{
+		voice->adsr1 = (uint16_t)((voice->adsr1 & ~0xF)
+		                    | (a->sl & 0xF));
+	}
+	if (a->mask & SPU_VOICE_ADSR_SR)
+	{
+		voice->adsr2 = (uint16_t)((voice->adsr2 & ~(0x7F << 6))
+		                    | ((a->sr & 0x7F) << 6));
+	}
+	if (a->mask & SPU_VOICE_ADSR_SMODE)
+	{
+		bool dec = (a->s_mode == SPU_VOICE_LINEARDecN || a->s_mode == SPU_VOICE_LINEARDecR ||
+		            a->s_mode == SPU_VOICE_EXPDecN    || a->s_mode == SPU_VOICE_EXPDecR);
+		bool exp = (a->s_mode == SPU_VOICE_EXPIncN || a->s_mode == SPU_VOICE_EXPIncR ||
+		            a->s_mode == SPU_VOICE_EXPDecN || a->s_mode == SPU_VOICE_EXPDecR);
+		voice->adsr2 = (uint16_t)((voice->adsr2 & ~((1u << 14) | (1u << 15)))
+		                    | ((dec ? 1u : 0u) << 14)
+		                    | ((exp ? 1u : 0u) << 15));
+	}
+	if (a->mask & SPU_VOICE_ADSR_RR)
+	{
+		voice->adsr2 = (uint16_t)((voice->adsr2 & ~0x1F)
+		                    | (a->rr & 0x1F));
+	}
+	if (a->mask & SPU_VOICE_ADSR_RMODE)
+	{
+		bool exp = (a->r_mode == SPU_VOICE_EXPDec || a->r_mode == SPU_VOICE_EXPDecR ||
+		            a->r_mode == SPU_VOICE_EXPDecN);
+		voice->adsr2 = (uint16_t)((voice->adsr2 & ~(1u << 5))
+		                    | ((exp ? 1u : 0u) << 5));
+	}
+}
+
 void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 {
 	if (!g_spuInit)
 		return;
 
 	const float STEREO_FACTOR = 3.0f;
-	
+
 	SDL_LockMutex(g_SpuMutex);
 
 	for (int i = 0; i < s_spuVoiceCount; i++)
@@ -638,72 +1112,59 @@ void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 		SPUALVoice* voice = &g_SpuVoices[i];
 		ALuint alSource = voice->alSource;
 
+		// ADSR mirror + addr/pitch/volume mirror are independent of
+		// OpenAL — always update so the envelope sim runs even when
+		// the audio device is missing.
+		SPUAL_PackADSR(voice, psxAttrib);
+
+		if (psxAttrib->mask & SPU_VOICE_WDSA)
+		{
+			if (voice->attr.addr != psxAttrib->addr)
+				voice->sampledirty++;
+			voice->attr.addr = psxAttrib->addr;
+		}
+		if (psxAttrib->mask & SPU_VOICE_LSAX)
+		{
+			if (voice->attr.loop_addr != psxAttrib->loop_addr)
+				voice->sampledirty++;
+			voice->attr.loop_addr = psxAttrib->loop_addr;
+		}
+		if (psxAttrib->mask & SPU_VOICE_VOLL)
+			voice->attr.volume.left = psxAttrib->volume.left;
+		if (psxAttrib->mask & SPU_VOICE_VOLR)
+			voice->attr.volume.right = psxAttrib->volume.right;
+		if (psxAttrib->mask & SPU_VOICE_PITCH)
+			voice->attr.pitch = psxAttrib->pitch;
+
 		if (alSource == AL_NONE)
 			continue;
-		
-		// update sample
-		if ((psxAttrib->mask & SPU_VOICE_WDSA) || (psxAttrib->mask & SPU_VOICE_LSAX))
-		{
-			if (psxAttrib->mask & SPU_VOICE_WDSA)
-			{
-				if (voice->attr.addr != psxAttrib->addr)
-					voice->sampledirty++;
 
-				voice->attr.addr = psxAttrib->addr;
-			}
-			
-			if (psxAttrib->mask & SPU_VOICE_LSAX)
-			{
-				if(voice->attr.loop_addr != psxAttrib->loop_addr)
-					voice->sampledirty++;
-
-				voice->attr.loop_addr = psxAttrib->loop_addr;
-			}			
-		}
-
-		// update volume
+		// OpenAL playback path: gain/panning/pause are derived from
+		// the mirror written above. Skipped entirely when no audio
+		// device is attached.
 		if ((psxAttrib->mask & SPU_VOICE_VOLL) || (psxAttrib->mask & SPU_VOICE_VOLR))
 		{
-			if (psxAttrib->mask & SPU_VOICE_VOLL)
-				voice->attr.volume.left = psxAttrib->volume.left;
-
-			if (psxAttrib->mask & SPU_VOICE_VOLR)
-				voice->attr.volume.right = psxAttrib->volume.right;
-
 			float left_gain = (float)(voice->attr.volume.left) / (float)(16384);
 			float right_gain = (float)(voice->attr.volume.right) / (float)(16384);
-
-			if(left_gain > 1.0f)
-				left_gain = 1.0f;
-
-			if(right_gain > 1.0f)
-				right_gain = 1.0f;
-
-			float pan = (acosf(left_gain) + asinf(right_gain)) / ((float)(M_PI)); // average angle in [0,1]
-			pan = 2.0f * pan - 1.0f; // convert to [-1, 1]
-			pan = pan * 0.5f; // 0.5 = sin(30') for a +/- 30 degree arc
+			if (left_gain > 1.0f) left_gain = 1.0f;
+			if (right_gain > 1.0f) right_gain = 1.0f;
+			float pan = (acosf(left_gain) + asinf(right_gain)) / ((float)(M_PI));
+			pan = 2.0f * pan - 1.0f;
+			pan = pan * 0.5f;
 			alSource3f(alSource, AL_POSITION, pan * STEREO_FACTOR, 0, -sqrtf(1.0f - pan * pan));
-			alSourcef(alSource, AL_GAIN, (left_gain+right_gain)*0.5f);
+			alSourcef(alSource, AL_GAIN, (left_gain + right_gain) * 0.5f);
 		}
-
-		// update pitch
 		if (psxAttrib->mask & SPU_VOICE_PITCH)
 		{
 			ALint state;
 			alGetSourcei(alSource, AL_SOURCE_STATE, &state);
-
 			if (psxAttrib->pitch == 0 && state == AL_PLAYING)
 				alSourcePause(alSource);
 			else if (voice->attr.pitch == 0 && state == AL_PAUSED)
 				alSourcePlay(alSource);
-
-			voice->attr.pitch = psxAttrib->pitch;
-
 			const float pitch = (float)(voice->attr.pitch) / 4096.0f;
 			alSourcef(alSource, AL_PITCH, pitch);
 		}
-		
-		// TODO: ADSR and other stuff
 	}
 	SDL_UnlockMutex(g_SpuMutex);
 }
@@ -722,6 +1183,21 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 		SPUALVoice* voice = &g_SpuVoices[i];
 		ALuint alSource = voice->alSource;
 
+		// Update game-logic state (keyed_on + ADSR sim) regardless of
+		// whether OpenAL has a source to play through. Without this,
+		// SpuGetKeyStatus would never report SPU_RESET in headless or
+		// no-audio-device runs and the game would leak voice slots.
+		if (on_off)
+		{
+			voice->keyed_on = 1;
+			SPUAL_Voice_KeyOn(voice);
+		}
+		else
+		{
+			voice->keyed_on = 0;
+			SPUAL_Voice_EnvKeyOff(voice);
+		}
+
 		if (alSource == AL_NONE)
 			continue;
 
@@ -731,84 +1207,84 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 			UpdateVoiceSample(voice);
 
 			alSourcePlay(alSource);
-			voice->keyed_on = 1;
 		}
 		else
 		{
 			alSourceStop(alSource);
-			voice->keyed_on = 0;
 		}
 	}
 	SDL_UnlockMutex(g_SpuMutex);
 }
 
+// Map ADSR phase + keyed_on to PSX libspu key-status return code.
+// Spyro's spu.c (and many other games) polls this to detect natural
+// sample completion and free voice slots; without correct mapping
+// the 24-voice pool leaks and subsequent sounds drop.
+//   SPU_OFF        = 0  key-off, env-off  (idle / never keyed)
+//   SPU_ON         = 1  key-on,  env-on   (playing)
+//   SPU_OFF_ENV_ON = 2  key-off, env-on   (release fade in progress)
+//   SPU_ON_ENV_OFF = 3  key-on,  env-off  (= SPU_RESET; finished while keyed)
+static int SPUAL_VoiceKeyStatus(const SPUALVoice* v)
+{
+	const uint8_t phase = v->adsr_phase;
+	if (phase == PSYX_SPU_ENV_OFF)
+		return v->keyed_on ? SPU_ON_ENV_OFF : SPU_OFF;
+	if (phase == PSYX_SPU_ENV_RELEASE)
+		return SPU_OFF_ENV_ON;
+	return SPU_ON;
+}
+
 int PsyX_SPUAL_GetKeyStatus(u_int voice_bit)
 {
-	/* PSX libspu states (libspu.h):
-	 *   SPU_OFF        = 0  key-off, env-off  (idle / never keyed)
-	 *   SPU_ON         = 1  key-on,  env-on   (playing)
-	 *   SPU_OFF_ENV_ON = 2  key-off, env-on   (released, fading)
-	 *   SPU_ON_ENV_OFF = 3  key-on,  env-off  (= SPU_RESET; sample done
-	 *                                          while still keyed on)
-	 *
-	 * Spyro's spu.c relies on the SPU_RESET (3) value to detect that a
-	 * sound has finished naturally — it then frees the active-sound slot.
-	 * Returning a plain boolean (0/1) means slots leak forever and the
-	 * 24-voice pool fills up, dropping subsequent sounds. */
-	int state = AL_STOPPED;
-	int keyed_on = 0;
+	int result = SPU_OFF;
 	SDL_LockMutex(g_SpuMutex);
-
 	for (int i = 0; i < s_spuVoiceCount; i++)
 	{
 		if (voice_bit != SPU_VOICECH(i))
 			continue;
-
-		SPUALVoice* voice = &g_SpuVoices[i];
-		ALuint alSource = voice->alSource;
-
-		if (alSource == AL_NONE)
-			break;
-
-		alGetSourcei(alSource, AL_SOURCE_STATE, &state);
-		keyed_on = voice->keyed_on;
+		result = SPUAL_VoiceKeyStatus(&g_SpuVoices[i]);
 		break;
 	}
-
 	SDL_UnlockMutex(g_SpuMutex);
-
-	if (state == AL_PLAYING)
-		return SPU_ON;                 // 1
-	if (state == AL_PAUSED)
-		return SPU_OFF_ENV_ON;         // 2
-	if (keyed_on)
-		return SPU_ON_ENV_OFF;         // 3 (SPU_RESET) — finished while still keyed
-	return SPU_OFF;                    // 0
+	return result;
 }
 
 void PsyX_SPUAL_GetAllKeysStatus(char* status)
 {
 	SDL_LockMutex(g_SpuMutex);
 	for (int i = 0; i < s_spuVoiceCount; i++)
-	{
-		SPUALVoice* voice = &g_SpuVoices[i];
-		ALuint alSource = voice->alSource;
-		if (alSource == AL_NONE)
-		{
-			status[i] = SPU_OFF;
-			continue;
-		}
+		status[i] = (char)SPUAL_VoiceKeyStatus(&g_SpuVoices[i]);
+	SDL_UnlockMutex(g_SpuMutex);
+}
 
-		int state;
-		alGetSourcei(alSource, AL_SOURCE_STATE, &state);
-		if (state == AL_PLAYING)
-			status[i] = SPU_ON;
-		else if (state == AL_PAUSED)
-			status[i] = SPU_OFF_ENV_ON;
-		else if (voice->keyed_on)
-			status[i] = SPU_ON_ENV_OFF;
-		else
-			status[i] = SPU_OFF;
+void PsyX_SPUAL_TickEnvelope(int samples)
+{
+	if (samples <= 0) return;
+	SDL_LockMutex(g_SpuMutex);
+	for (int i = 0; i < s_spuVoiceCount; i++)
+	{
+		SPUALVoice* v = &g_SpuVoices[i];
+		if (v->adsr_phase == PSYX_SPU_ENV_OFF)
+			continue;
+		for (int s = 0; s < samples; s++)
+		{
+			// One-shot ADPCM auto-key-off: when output-sample countdown
+			// hits zero, force voice to Off (mirrors PSX SPU behavior on
+			// loop_end+!loop_repeat block).
+			if (v->one_shot_samples_remaining > 0)
+			{
+				v->one_shot_samples_remaining--;
+				if (v->one_shot_samples_remaining == 0)
+				{
+					v->adsr_phase = PSYX_SPU_ENV_OFF;
+					v->adsr_volume = 0;
+					break;
+				}
+			}
+			SPUAL_Voice_EnvTick(v);
+			if (v->adsr_phase == PSYX_SPU_ENV_OFF)
+				break;
+		}
 	}
 	SDL_UnlockMutex(g_SpuMutex);
 }

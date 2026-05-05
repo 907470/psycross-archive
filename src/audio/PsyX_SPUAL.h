@@ -29,6 +29,16 @@ extern void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit);
 extern int PsyX_SPUAL_GetKeyStatus(u_int voice_bit);
 extern void PsyX_SPUAL_GetAllKeysStatus(char* status);
 
+/* Advance the deterministic ADSR envelope simulation for all 24
+ * voices by `samples` SPU samples (44100 Hz). Called once per game
+ * VBL (~735 samples NTSC) by openpete so that game-logic-relevant
+ * SPU state transitions track real PSX timing regardless of host
+ * audio backend or whether an audio device is available.
+ *
+ * The envelope generator follows psx-spx ("SPU Volume and ADSR
+ * Generator") and is independent of the audio device. */
+extern void PsyX_SPUAL_TickEnvelope(int samples);
+
 extern int PsyX_SPUAL_SetMute(int on_off);
 extern int PsyX_SPUAL_SetReverb(int on_off);
 extern int PsyX_SPUAL_GetReverbState();
