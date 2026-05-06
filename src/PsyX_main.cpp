@@ -851,6 +851,10 @@ void PsyX_EndScene()
 	
 	GR_StoreFrameBuffer(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
 
+	/* Crop the PSX overscan bands (DRAWENV.clip shorter than DISPENV.disp)
+	 * onto the window's default framebuffer before the overlay draws on top. */
+	GR_PresentCroppedToWindow();
+
 	if (g_psyx_postRenderOverlay)
 		g_psyx_postRenderOverlay();
 

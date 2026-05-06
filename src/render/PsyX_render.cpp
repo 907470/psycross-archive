@@ -67,6 +67,16 @@ int g_vramTextureIdx = 0;
 TextureID g_fbTexture = -1;
 TextureID g_offscreenRTTexture = -1;
 
+/* OpenPete: scene rendering is redirected to this FBO so the final present
+ * blit can crop the PSX overscan bands (rows where DRAWENV.clip is shorter
+ * than DISPENV.disp — typically 8px top + 8px bottom of a 240-tall display).
+ * Default fb 0 only receives the cropped scene + post-render overlay. */
+TextureID g_presentColorTexture = -1;
+GLuint g_glPresentFramebuffer = 0;
+GLuint g_glPresentDepthStencilRBO = 0;
+int g_presentFbWidth = 0;
+int g_presentFbHeight = 0;
+
 TextureID g_whiteTexture = -1;
 TextureID g_lastBoundTexture = -1;
 
@@ -400,6 +410,10 @@ int GR_InitialiseRender(char* windowName, int width, int height, int fullscreen)
 	return 1;
 }
 
+#if USE_OPENGL
+static void GR_DestroyPresentFB();
+#endif
+
 void GR_Shutdown()
 {
 #if USE_OPENGL
@@ -412,6 +426,8 @@ void GR_Shutdown()
 	glDeleteFramebuffers(1, &g_glBlitFramebuffer);
 	glDeleteFramebuffers(1, &g_glOffscreenFramebuffer);
 	glDeleteFramebuffers(1, &g_glVRAMFramebuffer);
+
+	GR_DestroyPresentFB();
 
 	GR_DestroyTexture(g_vramTexturesDouble[0]);
 	GR_DestroyTexture(g_vramTexturesDouble[1]);
@@ -429,11 +445,138 @@ void GR_UpdateSwapIntervalState(int swapInterval)
 #endif
 }
 
+#if USE_OPENGL
+static void GR_DestroyPresentFB()
+{
+	if (g_glPresentFramebuffer)
+	{
+		glDeleteFramebuffers(1, &g_glPresentFramebuffer);
+		g_glPresentFramebuffer = 0;
+	}
+	if (g_glPresentDepthStencilRBO)
+	{
+		glDeleteRenderbuffers(1, &g_glPresentDepthStencilRBO);
+		g_glPresentDepthStencilRBO = 0;
+	}
+	if (g_presentColorTexture != (TextureID)-1)
+	{
+		GR_DestroyTexture(g_presentColorTexture);
+		g_presentColorTexture = -1;
+	}
+	g_presentFbWidth = 0;
+	g_presentFbHeight = 0;
+}
+
+static void GR_EnsurePresentFB(int w, int h)
+{
+	if (w <= 0 || h <= 0)
+		return;
+	if (g_glPresentFramebuffer && g_presentFbWidth == w && g_presentFbHeight == h)
+		return;
+
+	GR_DestroyPresentFB();
+
+	GLuint colorTex = 0;
+	glGenTextures(1, &colorTex);
+	glBindTexture(GL_TEXTURE_2D, colorTex);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	g_presentColorTexture = (TextureID)colorTex;
+
+	glGenRenderbuffers(1, &g_glPresentDepthStencilRBO);
+	glBindRenderbuffer(GL_RENDERBUFFER, g_glPresentDepthStencilRBO);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+	glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+	glGenFramebuffers(1, &g_glPresentFramebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, g_glPresentFramebuffer);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTex, 0);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_glPresentDepthStencilRBO);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	g_presentFbWidth = w;
+	g_presentFbHeight = h;
+}
+#endif
+
+/* Compute the FBO height needed so the visible scissor region (clip.h disp
+ * rows) maps 1:1 onto the window height. For Spyro: 240 disp / 224 clip →
+ * fb_h = window_h * 240/224 = 480 (window_h=448). */
+static int GR_PresentFBHeightForWindow(int window_h)
+{
+	int disp_h = activeDispEnv.disp.h;
+	int clip_h = activeDrawEnv.clip.h;
+	if (disp_h <= 0 || clip_h <= 0 || clip_h > disp_h)
+		return window_h;
+	if (clip_h == disp_h)
+		return window_h;
+	long long fb_h = ((long long)window_h * disp_h + (clip_h / 2)) / clip_h;
+	if (fb_h < window_h) fb_h = window_h;
+	return (int)fb_h;
+}
+
+extern "C" void GR_PresentCroppedToWindow()
+{
+#if USE_OPENGL
+	if (!g_glPresentFramebuffer)
+		return;
+
+	int disp_h = activeDispEnv.disp.h;
+	int clip_h = activeDrawEnv.clip.h;
+	int dy     = activeDrawEnv.clip.y - activeDispEnv.disp.y;
+	if (disp_h <= 0)  disp_h = g_presentFbHeight;
+	if (clip_h <= 0 || clip_h > disp_h) clip_h = disp_h;
+	if (dy < 0) dy = 0;
+
+	/* Crop to the scissor rect — the canonical PSX visible region per
+	 * DRAWENV.clip. PsyCross renders the full scissor area (geometry fills
+	 * the entire scissored region empirically), so source = scissor in
+	 * disp-relative ortho coords. In FBO bottom-origin pixels:
+	 *   top edge    = fb_h - dy * fb_h/disp_h
+	 *   bottom edge = fb_h - (dy + clip_h) * fb_h/disp_h
+	 * For Spyro+window=448: fb_h=480, src_y=[16, 464], width 448 → 1:1. */
+	int top_disp_y = dy;
+	int bot_disp_y = dy + clip_h;
+	if (bot_disp_y > disp_h) bot_disp_y = disp_h;
+	int src_y_bottom = g_presentFbHeight - (top_disp_y * g_presentFbHeight + disp_h / 2) / disp_h;
+	int src_y_top    = g_presentFbHeight - (bot_disp_y * g_presentFbHeight + disp_h / 2) / disp_h;
+	if (src_y_top < 0) src_y_top = 0;
+	if (src_y_bottom > g_presentFbHeight) src_y_bottom = g_presentFbHeight;
+
+	/* glBlitFramebuffer respects GL_SCISSOR_TEST, and the scene leaves
+	 * scissor enabled with rect sized for the present FBO. On the (shorter)
+	 * default framebuffer that scissor would clip the bottom of the dst
+	 * rect, leaving a band of stale backbuffer pixels. Disable scissor for
+	 * the blit and restore the prior state. */
+	GLboolean prev_scissor = glIsEnabled(GL_SCISSOR_TEST);
+	if (prev_scissor) glDisable(GL_SCISSOR_TEST);
+
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, g_glPresentFramebuffer);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glBlitFramebuffer(
+		0, src_y_top, g_presentFbWidth, src_y_bottom,
+		0, 0, g_windowWidth, g_windowHeight,
+		GL_COLOR_BUFFER_BIT, GL_LINEAR);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+	if (prev_scissor) glEnable(GL_SCISSOR_TEST);
+#endif
+}
+
 void GR_BeginScene()
 {
 	g_lastBoundTexture = 0;
 
 #if USE_OPENGL
+	GR_EnsurePresentFB(g_windowWidth, GR_PresentFBHeightForWindow(g_windowHeight));
+	if (g_glPresentFramebuffer)
+		glBindFramebuffer(GL_FRAMEBUFFER, g_glPresentFramebuffer);
+
 #ifdef RENDERER_OGLES
 	glClearDepthf(1.0f);
 #else
@@ -444,7 +587,12 @@ void GR_BeginScene()
 #endif
 
 	GR_UpdateVRAM();
-	GR_SetViewPort(0, 0, g_windowWidth, g_windowHeight);
+	/* Viewport spans the present FBO, not the window — the FBO may be taller
+	 * than the window when overscan cropping is in play (see GR_PresentCroppedToWindow). */
+	if (g_glPresentFramebuffer)
+		GR_SetViewPort(0, 0, g_presentFbWidth, g_presentFbHeight);
+	else
+		GR_SetViewPort(0, 0, g_windowWidth, g_windowHeight);
 
 	if (g_dbg_wireframeMode)
 	{
@@ -1189,14 +1337,27 @@ void GR_SetupClipMode(const RECT16* rect, int enable)
 	}
 
 #if USE_OPENGL
-	// adjust scissor rectangle by the backbuffer size (window dimensions)
-	const float flipOffset = g_windowHeight - clipRectH * (float)g_windowHeight;
-	const float crx = clipRectX * (float)g_windowWidth;
-	const float cry = clipRectY * (float)g_windowHeight;
-	const float crw = clipRectW * (float)g_windowWidth;
-	const float crh = clipRectH * (float)g_windowHeight;
+	// Scissor is applied to the currently-bound draw target. When the present
+	// FBO is in play it's typically taller than the window (overscan crop), so
+	// scissor must be normalized against the FBO's pixel dimensions, not the
+	// window's — otherwise it clips into the rendered scene at the wrong row.
+	const float targetW = (float)(g_glPresentFramebuffer ? g_presentFbWidth  : g_windowWidth);
+	const float targetH = (float)(g_glPresentFramebuffer ? g_presentFbHeight : g_windowHeight);
+	const float flipOffset = targetH - clipRectH * targetH;
+	const float crx = clipRectX * targetW;
+	const float cry = clipRectY * targetH;
+	const float crw = clipRectW * targetW;
+	const float crh = clipRectH * targetH;
 
-	glScissor(crx, flipOffset - cry, crw, crh);
+	/* Round float→GLint to nearest. Truncation here produced an off-by-one
+	 * scissor for PSX rects whose normalized fraction × targetH lands just
+	 * shy of an integer (e.g. 224/240·480 = 447.999…), shaving 1 px off
+	 * the bottom of the rendered scene and creating a 1-px clear line in
+	 * the present-blit's output. */
+	glScissor((GLint)(crx + 0.5f),
+	          (GLint)(flipOffset - cry + 0.5f),
+	          (GLint)(crw + 0.5f),
+	          (GLint)(crh + 0.5f));
 #endif
 }
 
@@ -1561,7 +1722,12 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 	}
 	else
 	{
-		GR_SetViewPort(0, 0, g_windowWidth, g_windowHeight);
+		/* Restoring the scene viewport: the FBO (when overscan crop is active)
+		 * is taller than the window. */
+		if (g_glPresentFramebuffer)
+			GR_SetViewPort(0, 0, g_presentFbWidth, g_presentFbHeight);
+		else
+			GR_SetViewPort(0, 0, g_windowWidth, g_windowHeight);
 
 #if USE_OFFSCREEN_BLIT
 		// before drawing set source and target
@@ -1585,7 +1751,8 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 		}
 #endif
 		
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		/* OpenPete: scene rendering targets the present FBO, not default fb 0. */
+		glBindFramebuffer(GL_FRAMEBUFFER, g_glPresentFramebuffer ? g_glPresentFramebuffer : 0);
 		// copy rendering results to VRAM texture
 		{
 			// reat the texture
@@ -1626,11 +1793,14 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
 
 	// before drawing set source and target
 	{
-		// setup draw and read framebuffers
-		glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);					// source is backbuffer
+		/* OpenPete: read from the present FBO (where the scene was rendered)
+		 * rather than default fb 0 (which only carries the cropped scene + overlay). */
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, g_glPresentFramebuffer ? g_glPresentFramebuffer : 0);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_glBlitFramebuffer);
 
-		glBlitFramebuffer(0, 0, g_windowWidth, g_windowHeight, x, y + h, x + w, y, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+		int src_w = g_glPresentFramebuffer ? g_presentFbWidth  : g_windowWidth;
+		int src_h = g_glPresentFramebuffer ? g_presentFbHeight : g_windowHeight;
+		glBlitFramebuffer(0, 0, src_w, src_h, x, y + h, x + w, y, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
 		// Blit framebuffer to VRAM screen area
 

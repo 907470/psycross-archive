@@ -187,6 +187,7 @@ extern void			GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int d
 extern void			GR_ReadVRAM(unsigned short* dst, int x, int y, int dst_w, int dst_h);
 
 extern void			GR_StoreFrameBuffer(int x, int y, int w, int h);
+extern void			GR_PresentCroppedToWindow();
 extern void			GR_UpdateVRAM();
 extern void			GR_ReadFramebufferDataToVRAM();
 
