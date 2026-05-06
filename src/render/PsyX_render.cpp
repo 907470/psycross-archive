@@ -519,6 +519,21 @@ static int GR_PresentFBHeightForWindow(int window_h)
 	return (int)fb_h;
 }
 
+/* FBO width is pinned to FBO height by the canonical PSX-NTSC display
+ * aspect (4:3), times the Hor+ render-aspect factor when widescreen is
+ * active. Decoupling FBO width from g_windowWidth keeps the cropped src's
+ * aspect fixed across host window resizes — the present-blit then
+ * letter/pillarboxes instead of stretching. */
+static int GR_PresentFBWidthForHeight(int fb_h)
+{
+	double aspect = 4.0 / 3.0;
+	if (g_psyx_render_aspect_factor > 0.0f)
+		aspect *= (double)g_psyx_render_aspect_factor;
+	int fb_w = (int)((double)fb_h * aspect + 0.5);
+	if (fb_w < 1) fb_w = 1;
+	return fb_w;
+}
+
 extern "C" void GR_PresentCroppedToWindow()
 {
 #if USE_OPENGL
@@ -555,11 +570,45 @@ extern "C" void GR_PresentCroppedToWindow()
 	GLboolean prev_scissor = glIsEnabled(GL_SCISSOR_TEST);
 	if (prev_scissor) glDisable(GL_SCISSOR_TEST);
 
+	/* Preserve the cropped region's aspect ratio in the host window: scale
+	 * the dst rect to fit while matching src aspect, centre, and clear the
+	 * surrounding area to black so resizing the window letter/pillarboxes
+	 * instead of stretching. */
+	const int src_w = g_presentFbWidth;
+	const int src_h = src_y_bottom - src_y_top;
+	int dst_w = g_windowWidth;
+	int dst_h = g_windowHeight;
+	int dst_x = 0;
+	int dst_y = 0;
+	if (src_w > 0 && src_h > 0) {
+		const long long win_aspect_num = (long long)g_windowWidth  * src_h;
+		const long long src_aspect_num = (long long)src_w * g_windowHeight;
+		if (win_aspect_num > src_aspect_num) {
+			/* window wider than content → pillarbox */
+			dst_h = g_windowHeight;
+			dst_w = (int)(((long long)g_windowHeight * src_w + src_h / 2) / src_h);
+			dst_x = (g_windowWidth  - dst_w) / 2;
+			dst_y = 0;
+		} else if (win_aspect_num < src_aspect_num) {
+			/* window taller than content → letterbox */
+			dst_w = g_windowWidth;
+			dst_h = (int)(((long long)g_windowWidth * src_h + src_w / 2) / src_w);
+			dst_x = 0;
+			dst_y = (g_windowHeight - dst_h) / 2;
+		}
+	}
+	if (dst_x > 0 || dst_y > 0 ||
+	    dst_x + dst_w < g_windowWidth || dst_y + dst_h < g_windowHeight) {
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT);
+	}
+
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, g_glPresentFramebuffer);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 	glBlitFramebuffer(
-		0, src_y_top, g_presentFbWidth, src_y_bottom,
-		0, 0, g_windowWidth, g_windowHeight,
+		0, src_y_top, src_w, src_y_bottom,
+		dst_x, dst_y, dst_x + dst_w, dst_y + dst_h,
 		GL_COLOR_BUFFER_BIT, GL_LINEAR);
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -573,7 +622,11 @@ void GR_BeginScene()
 	g_lastBoundTexture = 0;
 
 #if USE_OPENGL
-	GR_EnsurePresentFB(g_windowWidth, GR_PresentFBHeightForWindow(g_windowHeight));
+	{
+		int fb_h = GR_PresentFBHeightForWindow(g_windowHeight);
+		int fb_w = GR_PresentFBWidthForHeight(fb_h);
+		GR_EnsurePresentFB(fb_w, fb_h);
+	}
 	if (g_glPresentFramebuffer)
 		glBindFramebuffer(GL_FRAMEBUFFER, g_glPresentFramebuffer);
 
