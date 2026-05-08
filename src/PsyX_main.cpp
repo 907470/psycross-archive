@@ -16,6 +16,9 @@
 #include "psx/libgpu.h"
 #include "psx/libspu.h"
 
+#include "audio/PsyX_SPUAL.h"
+#include "audio/PsyX_XA.h"
+
 #include <assert.h>
 #include <string.h>
 
@@ -1049,6 +1052,15 @@ void PsyX_Shutdown()
 
 	GR_Shutdown();
 	SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
+
+	// Tear down audio before SDL_Quit so OpenAL's PulseAudio backend gets a
+	// clean pa_stream_disconnect / pa_context_disconnect. Without this the
+	// process exits with the device still open; libopenal's atexit handler
+	// only logs ("AL lib: (EE) alc_cleanup: 1 device not closed") and the
+	// WSLg PulseAudio server leaks shm-pool registrations across launches,
+	// eventually returning AL_OUT_OF_MEMORY to fresh alcOpenDevice calls.
+	PsyX_XA_Shutdown();
+	PsyX_SPUAL_ShutdownSound();
 
 	SDL_Quit();
 
