@@ -200,18 +200,27 @@ extern "C" {
     typedef struct { float dx; float dy; } openpete_substitute_delta_t;
     openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         const int16_t* p, float alpha);
+    int64_t op_now(void);
+    float   openpete_render_compute_alpha(int64_t now_ns);
 }
 
-/* Phase 2.0 milestone alpha. Hardcoded from env var OPENPETE_LERP_ALPHA
- * (0.0 = no substitute, 1.0 = full lerp to N). Threading from real
- * frame-pacing alpha lands once the skeletal-granularity test passes. */
-static float g_openpete_lerp_alpha = -1.0f;
+/* Phase 2.1 alpha source.
+ *
+ * OPENPETE_LERP_ALPHA env var (>= 0) takes precedence — useful for
+ * testing fixed-alpha visuals. Otherwise we call
+ * openpete_render_compute_alpha(op_now()) which returns (now -
+ * last_sim_tick) / sim_period clamped to [0, 1]. At sim-due renders
+ * alpha ≈ 0; at intermediate renders (run.c re-issues the OT walk
+ * between sim ticks at higher render-fps) alpha advances through 0→1
+ * across the sim period, producing smooth motion. */
+static float g_openpete_lerp_alpha_env = -2.0f;  /* -2 = unread, -1 = unset, 0+ = forced */
 static inline float openpete_get_lerp_alpha() {
-    if (g_openpete_lerp_alpha < 0.0f) {
+    if (g_openpete_lerp_alpha_env < -1.5f) {
         const char* e = std::getenv("OPENPETE_LERP_ALPHA");
-        g_openpete_lerp_alpha = e ? (float)atof(e) : 0.0f;
+        g_openpete_lerp_alpha_env = e ? (float)atof(e) : -1.0f;
     }
-    return g_openpete_lerp_alpha;
+    if (g_openpete_lerp_alpha_env >= 0.0f) return g_openpete_lerp_alpha_env;
+    return openpete_render_compute_alpha(op_now());
 }
 static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
     if (g_openpete_render_probe_active != 1) return;

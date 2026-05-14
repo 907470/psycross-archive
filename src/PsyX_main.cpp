@@ -782,8 +782,6 @@ void PsyX_Sys_DoPollEvent()
 
 char begin_scene_flag = 0;
 
-/* Renderer-foundation Phase 0 (world-space cache) — rotation hook. */
-extern "C" void openpete_render_cache_begin_frame(void);
 /* Renderer-foundation Phase 1 (draw-call matcher) — finalize hook. */
 extern "C" void openpete_render_matcher_finalize_frame(void);
 /* Renderer-foundation Phase 2 (substitute) — eager dual-scan hook. */
@@ -857,17 +855,15 @@ void PsyX_EndScene()
 	 * the cache rotates. The matcher reads cache s_prev (which holds
 	 * the world data for the OT just walked); after rotate, s_prev
 	 * becomes the freshly-emitted next-frame data and finalize would
-	 * read wrong values. */
+	 * read wrong values.
+	 *
+	 * NOTE: cache rotate (openpete_render_cache_begin_frame) is NOT
+	 * called here anymore. Phase 2.1 moved it to run.c so EndScene
+	 * can fire multiple times per sim tick (for intermediate-render
+	 * frames at --render-fps > sim) without corrupting cache state.
+	 * run.c calls openpete_render_sim_tick_advanced() once per sim
+	 * tick after the sim-due EndScene fires. */
 	openpete_render_matcher_finalize_frame();
-
-	/* Renderer-foundation Phase 0: rotate the world-space cache. We do
-	 * this at EndScene (not BeginScene) because the game fiber's GTE
-	 * vertex transforms (the cache producers) run BEFORE the first
-	 * BeginScene of the frame — BeginScene is invoked lazily by
-	 * DrawOTag, which fires after all emits. Rotating at EndScene means
-	 * the just-finished frame's data lives in s_prev (matcher-accessible)
-	 * and the next frame's emits land in a freshly-cleared s_curr. */
-	openpete_render_cache_begin_frame();
 
 #if USE_PGXP
 	PGXP_ClearCache();
