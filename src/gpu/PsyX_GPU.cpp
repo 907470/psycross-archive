@@ -214,13 +214,18 @@ extern "C" {
  * between sim ticks at higher render-fps) alpha advances through 0→1
  * across the sim period, producing smooth motion. */
 static float g_openpete_lerp_alpha_env = -2.0f;  /* -2 = unread, -1 = unset, 0+ = forced */
+extern "C" float g_openpete_substitute_alpha_snapshot;
 static inline float openpete_get_lerp_alpha() {
     if (g_openpete_lerp_alpha_env < -1.5f) {
         const char* e = std::getenv("OPENPETE_LERP_ALPHA");
         g_openpete_lerp_alpha_env = e ? (float)atof(e) : -1.0f;
     }
     if (g_openpete_lerp_alpha_env >= 0.0f) return g_openpete_lerp_alpha_env;
-    return openpete_render_compute_alpha(op_now());
+    /* Phase 2.1 hotfix — read the snapshot pinned at OT-walk start by
+     * either mark_now (sim-due → 0) or snapshot_intermediate (re-emit
+     * → compute_alpha at that moment). Avoids per-vertex op_now() drift
+     * across a multi-ms OT walk. */
+    return g_openpete_substitute_alpha_snapshot;
 }
 static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
     if (g_openpete_render_probe_active != 1) return;
