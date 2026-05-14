@@ -1537,10 +1537,30 @@ static int ProcessPsyXPrims(P_TAG* polyTag)
 }
 
 // Processes primitive
+extern "C" {
+	extern int      g_openpete_render_probe_active;
+}
+extern "C" unsigned g_openpete_render_probe_count_ot_walk  = 0u;
+extern "C" unsigned g_openpete_render_probe_count_ot_pgxp_hit = 0u;
+extern "C" unsigned g_openpete_render_probe_count_ot_pgxp_miss = 0u;
+
 // returns processed primitive primLength in longs
 int ParsePrimitive(P_TAG* polyTag)
 {
 	const int primType = polyTag->code & 0xF0;
+
+	/* fps-unlock Phase 2 probe: count every primitive consumed by the
+	 * OT walker. This is the ground truth for "how many prims actually
+	 * exist in the OT each frame", regardless of whether they got there
+	 * via AddPrim() function calls or via the inline addPrim() macro
+	 * (which is just two memory writes — the common path). */
+	if (g_openpete_render_probe_active == 1) {
+		g_openpete_render_probe_count_ot_walk++;
+#if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
+		if (polyTag->pgxp_index != 0xFFFF) g_openpete_render_probe_count_ot_pgxp_hit++;
+		else                               g_openpete_render_probe_count_ot_pgxp_miss++;
+#endif
+	}
 
 	int primLength = 0;
 

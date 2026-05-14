@@ -862,6 +862,57 @@ void PsyX_EndScene()
 		g_psyx_postRenderOverlay();
 
 	GR_SwapWindow();
+
+	/* fps-unlock Phase 2 probe: per-frame summary of GTE + AddPrim
+	 * counters maintained by gte.cpp and LIBGPU.C. Off in normal
+	 * builds (gated by OPENPETE_RENDER_PROBE=1). */
+	{
+		extern int      g_openpete_render_probe_active;
+		extern unsigned g_openpete_render_probe_count_rtps;
+		extern unsigned g_openpete_render_probe_count_rtpt;
+		extern unsigned g_openpete_render_probe_count_mvmva;
+		extern unsigned g_openpete_render_probe_count_other;
+		extern unsigned g_openpete_render_probe_count_matrix_changes;
+		extern unsigned g_openpete_render_probe_count_addprim;
+		extern unsigned g_openpete_render_probe_count_addprim_grp;
+		extern unsigned g_openpete_render_probe_count_ot_walk;
+		extern unsigned g_openpete_render_probe_count_ot_pgxp_hit;
+		extern unsigned g_openpete_render_probe_count_ot_pgxp_miss;
+		extern unsigned openpete_frame;
+		if (g_openpete_render_probe_active == 1) {
+			printf("[render-probe] f%u SUMMARY rtps=%u rtpt=%u mvmva=%u other=%u "
+			       "matrix-changes=%u addPrim_fn=%u addPrims_fn=%u "
+			       "ot_walked=%u pgxp_hit=%u pgxp_miss=%u "
+			       "(verts=%u, prims_per_matrix_batch=%.1f)\n",
+			       openpete_frame,
+			       g_openpete_render_probe_count_rtps,
+			       g_openpete_render_probe_count_rtpt,
+			       g_openpete_render_probe_count_mvmva,
+			       g_openpete_render_probe_count_other,
+			       g_openpete_render_probe_count_matrix_changes,
+			       g_openpete_render_probe_count_addprim,
+			       g_openpete_render_probe_count_addprim_grp,
+			       g_openpete_render_probe_count_ot_walk,
+			       g_openpete_render_probe_count_ot_pgxp_hit,
+			       g_openpete_render_probe_count_ot_pgxp_miss,
+			       g_openpete_render_probe_count_rtps + 3 * g_openpete_render_probe_count_rtpt,
+			       g_openpete_render_probe_count_matrix_changes
+			           ? (double)g_openpete_render_probe_count_addprim /
+			             (double)g_openpete_render_probe_count_matrix_changes
+			           : 0.0);
+			fflush(stdout);
+			g_openpete_render_probe_count_rtps  = 0;
+			g_openpete_render_probe_count_rtpt  = 0;
+			g_openpete_render_probe_count_mvmva = 0;
+			g_openpete_render_probe_count_other = 0;
+			g_openpete_render_probe_count_matrix_changes = 0;
+			g_openpete_render_probe_count_addprim     = 0;
+			g_openpete_render_probe_count_addprim_grp = 0;
+			g_openpete_render_probe_count_ot_walk     = 0;
+			g_openpete_render_probe_count_ot_pgxp_hit = 0;
+			g_openpete_render_probe_count_ot_pgxp_miss = 0;
+		}
+	}
 }
 
 void PsyX_SwapWindowOnly()

@@ -546,14 +546,25 @@ void FntLoad(int x, int y)
 	}
 }
 
+/* fps-unlock Phase 2 / PGXP-fix diagnostic: counts the (currently
+ * 0/frame) AddPrim function-call path. The game's inline addPrim()
+ * macro is the common path and bypasses these — confirming "PsyCross
+ * never sees AddPrim" requires both this counter AND the OT-walker
+ * counter in PsyX_GPU.cpp::ParsePrimitive. */
+extern "C" int g_openpete_render_probe_active;
+extern "C" unsigned g_openpete_render_probe_count_addprim     = 0u;
+extern "C" unsigned g_openpete_render_probe_count_addprim_grp = 0u;
+
 void AddPrim(void* ot, void* p)
 {
 	addPrim(ot, p);
+	if (g_openpete_render_probe_active == 1) g_openpete_render_probe_count_addprim++;
 }
 
 void AddPrims(void* ot, void* p0, void* p1)
 {
 	addPrims(ot, p0, p1);
+	if (g_openpete_render_probe_active == 1) g_openpete_render_probe_count_addprim_grp++;
 }
 
 void CatPrim(void* p0, void* p1)
