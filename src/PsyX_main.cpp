@@ -782,6 +782,9 @@ void PsyX_Sys_DoPollEvent()
 
 char begin_scene_flag = 0;
 
+/* Renderer-foundation Phase 0 (world-space cache) — rotation hook. */
+extern "C" void openpete_render_cache_begin_frame(void);
+
 char PsyX_BeginScene()
 {
 	PsyX_Sys_DoPollEvent();
@@ -846,6 +849,15 @@ void PsyX_EndScene()
 	assert(begin_scene_flag);
 	begin_scene_flag = 0;
 
+	/* Renderer-foundation Phase 0: rotate the world-space cache. We do
+	 * this at EndScene (not BeginScene) because the game fiber's GTE
+	 * vertex transforms (the cache producers) run BEFORE the first
+	 * BeginScene of the frame — BeginScene is invoked lazily by
+	 * DrawOTag, which fires after all emits. Rotating at EndScene means
+	 * the just-finished frame's data lives in s_prev (matcher-accessible)
+	 * and the next frame's emits land in a freshly-cleared s_curr. */
+	openpete_render_cache_begin_frame();
+
 #if USE_PGXP
 	PGXP_ClearCache();
 #endif
@@ -878,6 +890,12 @@ void PsyX_EndScene()
 		extern unsigned g_openpete_render_probe_count_ot_walk;
 		extern unsigned g_openpete_render_probe_count_ot_pgxp_hit;
 		extern unsigned g_openpete_render_probe_count_ot_pgxp_miss;
+		/* Renderer-foundation Phase 0 counters (world-space cache). */
+		extern unsigned g_openpete_render_cache_emit_count;
+		extern unsigned g_openpete_render_cache_lookup_count;
+		extern unsigned g_openpete_render_cache_hit_count;
+		extern unsigned g_openpete_render_cache_probe_overflow_count;
+		extern unsigned g_openpete_render_cache_matrix_span_id;
 		extern unsigned openpete_frame;
 		if (g_openpete_render_probe_active == 1) {
 			printf("[render-probe] f%u SUMMARY rtps=%u rtpt=%u mvmva=%u other=%u "
@@ -900,6 +918,18 @@ void PsyX_EndScene()
 			           ? (double)g_openpete_render_probe_count_addprim /
 			             (double)g_openpete_render_probe_count_matrix_changes
 			           : 0.0);
+			printf("[render-probe] f%u CACHE emit=%u lookup=%u hit=%u "
+			       "(hit_rate=%.1f%%) probe_overflow=%u spans=%u\n",
+			       openpete_frame,
+			       g_openpete_render_cache_emit_count,
+			       g_openpete_render_cache_lookup_count,
+			       g_openpete_render_cache_hit_count,
+			       g_openpete_render_cache_lookup_count
+			           ? 100.0 * (double)g_openpete_render_cache_hit_count /
+			             (double)g_openpete_render_cache_lookup_count
+			           : 0.0,
+			       g_openpete_render_cache_probe_overflow_count,
+			       g_openpete_render_cache_matrix_span_id);
 			fflush(stdout);
 			g_openpete_render_probe_count_rtps  = 0;
 			g_openpete_render_probe_count_rtpt  = 0;
@@ -911,6 +941,11 @@ void PsyX_EndScene()
 			g_openpete_render_probe_count_ot_walk     = 0;
 			g_openpete_render_probe_count_ot_pgxp_hit = 0;
 			g_openpete_render_probe_count_ot_pgxp_miss = 0;
+			g_openpete_render_cache_emit_count            = 0;
+			g_openpete_render_cache_lookup_count          = 0;
+			g_openpete_render_cache_hit_count             = 0;
+			g_openpete_render_cache_probe_overflow_count  = 0;
+			/* matrix_span_id is monotonic across the run (not per-frame). */
 		}
 	}
 }

@@ -176,6 +176,26 @@ void MakeLineArray(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, ushort gteidx)
 	ScreenCoordsToEmulator(vertex, 4);
 }
 
+/* Renderer-foundation Phase 0: per-vertex world-space cache probe.
+ * Looks up the cache populated by psxrecomp's gte_rtps_internal. Phase 0
+ * is observation-only — we don't yet consume the world-space data; just
+ * verify hit-rate matches plan exit criteria (~5,400 hits/frame at
+ * level_10 active gameplay).
+ *
+ * Forward-declared so we don't drag the openpete header through PsyX
+ * just to call one function. */
+extern "C" {
+    extern int g_openpete_render_probe_active;
+    int openpete_render_cache_lookup_curr_raw(uint32_t sxy_key);
+}
+static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
+    if (g_openpete_render_probe_active != 1) return;
+    const uint32_t key =
+        ((uint32_t)(uint16_t)(int16_t)p[0]) |
+        (((uint32_t)(uint16_t)(int16_t)p[1]) << 16);
+    (void)openpete_render_cache_lookup_curr_raw(key);
+}
+
 inline void ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, ushort gteidx, int lookupOfs)
 {
 #if USE_PGXP
@@ -233,6 +253,10 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 	ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -1);
 	ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, 0);
 
+	RenderCacheProbeVertex(p0);
+	RenderCacheProbeVertex(p1);
+	RenderCacheProbeVertex(p2);
+
 	ScreenCoordsToEmulator(vertex, 3);
 }
 
@@ -264,6 +288,11 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 	ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -2);
 	ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, -1);
 	ApplyVertexPGXP(&vertex[3], p3, ofsX, ofsY, gteidx, 0);
+
+	RenderCacheProbeVertex(p0);
+	RenderCacheProbeVertex(p1);
+	RenderCacheProbeVertex(p2);
+	RenderCacheProbeVertex(p3);
 
 	ScreenCoordsToEmulator(vertex, 4);
 }
