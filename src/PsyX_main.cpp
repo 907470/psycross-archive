@@ -917,6 +917,7 @@ void PsyX_EndScene()
 		extern unsigned g_openpete_render_substitute_pair_count;
 		extern unsigned g_openpete_render_substitute_vert_hit_count;
 		extern unsigned g_openpete_render_substitute_vert_miss_count;
+		extern unsigned g_openpete_render_substitute_ui_optout_count;
 		extern unsigned openpete_frame;
 		if (g_openpete_render_probe_active == 1) {
 			printf("[render-probe] f%u SUMMARY rtps=%u rtpt=%u mvmva=%u other=%u "
@@ -974,11 +975,12 @@ void PsyX_EndScene()
 			unsigned sub_total = g_openpete_render_substitute_vert_hit_count +
 			                     g_openpete_render_substitute_vert_miss_count;
 			printf("[render-probe] f%u SUBST pairs=%u vert_hit=%u vert_miss=%u "
-			       "(vert_hit_rate=%.1f%%)\n",
+			       "ui_optout=%u (vert_hit_rate=%.1f%%)\n",
 			       openpete_frame,
 			       g_openpete_render_substitute_pair_count,
 			       g_openpete_render_substitute_vert_hit_count,
 			       g_openpete_render_substitute_vert_miss_count,
+			       g_openpete_render_substitute_ui_optout_count,
 			       sub_total
 			           ? 100.0 * (double)g_openpete_render_substitute_vert_hit_count /
 			             (double)sub_total
