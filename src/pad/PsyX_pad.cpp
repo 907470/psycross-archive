@@ -45,6 +45,7 @@ extern "C" unsigned short PsyX_Pad_GetLastP1Bits(void)
 
 u_short PsyX_Pad_UpdateKeyboardInput();
 void	PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad);
+void	PsyX_Pad_Event_ControllerAdded(Sint32 deviceId);
 static bool PsyX_Pad_UpdateKeyboardLeftStick(u_char* outX, u_char* outY);
 
 // Initializes SDL controllers
@@ -67,6 +68,30 @@ int PsyX_Pad_InitSystem()
 
 	// Add more controllers from custom file
 	SDL_GameControllerAddMappingsFromFile("gamecontrollerdb.txt");
+
+	/* Defensive cold-plug enumeration. SDL2 normally synthesizes
+	 * CONTROLLERDEVICEADDED for already-present devices when the
+	 * GameController subsystem inits, and PsyX_Sys_DoPollEvent later
+	 * drains them into PsyX_Pad_Event_ControllerAdded. That's enough
+	 * for plain XInput/HID pads.
+	 *
+	 * It is NOT enough for Steam Input on Windows (notably the 2026
+	 * Steam Controller, whose only public path is the Steam-injected
+	 * virtual gamepad). Steam hooks the process slightly after we
+	 * init SDL, so SDL has nothing to synthesize for at that moment;
+	 * the pad then becomes visible only after a true hot-plug event
+	 * fires later. Symptom: controller works iff (re)attached AFTER
+	 * launch.
+	 *
+	 * Walking SDL_NumJoysticks() here closes the cold-plug case
+	 * directly, independent of whichever backend's enumeration timing
+	 * you ended up with. PsyX_Pad_OpenController is idempotent. */
+	int n = SDL_NumJoysticks();
+	for (int j = 0; j < n; j++)
+	{
+		if (SDL_IsGameController(j))
+			PsyX_Pad_Event_ControllerAdded(j);
+	}
 
 	return 1;
 }
