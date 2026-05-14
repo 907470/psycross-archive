@@ -128,6 +128,16 @@ extern char PsyX_BeginScene(void);
 /* Usually called after DrawOTag/DrawOTagEnv */
 extern void PsyX_EndScene(void);
 
+/* Re-presents the last stored framebuffer to the window without re-running
+ * GR_EndScene / GR_StoreFrameBuffer. Used by render-fps>30 paths that need
+ * to saturate monitor refresh between sim ticks: no new display list has
+ * been built, so we just re-blit the previously-stored scene FB + redraw
+ * the post-render overlay + swap. Cheap (one textured quad + SDL_GL_SwapWindow).
+ *
+ * Safe to call any number of times between PsyX_EndScene() calls. Does NOT
+ * touch the BeginScene/EndScene flag — interleaves freely with scene work. */
+extern void PsyX_SwapWindowOnly(void);
+
 /* Explicitly updates emulator input loop */
 extern void PsyX_UpdateInput(void);
 

@@ -864,6 +864,24 @@ void PsyX_EndScene()
 	GR_SwapWindow();
 }
 
+void PsyX_SwapWindowOnly()
+{
+	/* Re-present the last stored framebuffer without re-running GR_EndScene
+	 * or GR_StoreFrameBuffer. The previous PsyX_EndScene captured the scene
+	 * to a texture; GR_PresentCroppedToWindow just reads it. The overlay
+	 * hook runs again so FPS / debug overlays update at the swap cadence
+	 * (otherwise they'd stutter at sim cadence inside an unlocked render
+	 * loop). Does not touch begin_scene_flag — calling sites are render-only
+	 * iterations that bracket a paused game fiber. */
+
+	GR_PresentCroppedToWindow();
+
+	if (g_psyx_postRenderOverlay)
+		g_psyx_postRenderOverlay();
+
+	GR_SwapWindow();
+}
+
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
 void PsyX_TakeScreenshot()
 {
