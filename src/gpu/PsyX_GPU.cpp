@@ -197,6 +197,21 @@ extern "C" {
                                               const int16_t* p1,
                                               const int16_t* p2,
                                               const int16_t* p3);
+    typedef struct { float dx; float dy; } openpete_substitute_delta_t;
+    openpete_substitute_delta_t openpete_render_matcher_substitute_query(
+        const int16_t* p, float alpha);
+}
+
+/* Phase 2.0 milestone alpha. Hardcoded from env var OPENPETE_LERP_ALPHA
+ * (0.0 = no substitute, 1.0 = full lerp to N). Threading from real
+ * frame-pacing alpha lands once the skeletal-granularity test passes. */
+static float g_openpete_lerp_alpha = -1.0f;
+static inline float openpete_get_lerp_alpha() {
+    if (g_openpete_lerp_alpha < 0.0f) {
+        const char* e = std::getenv("OPENPETE_LERP_ALPHA");
+        g_openpete_lerp_alpha = e ? (float)atof(e) : 0.0f;
+    }
+    return g_openpete_lerp_alpha;
 }
 static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
     if (g_openpete_render_probe_active != 1) return;
@@ -268,6 +283,21 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 	RenderCacheProbeVertex(p2);
 	openpete_render_matcher_observe_tri(p0, p1, p2);
 
+	/* Phase 2.0 substitute: per-vertex screen-space delta. Applied to
+	 * the GL vertex buffer entry (NOT the prim packet) so subsequent
+	 * cache lookups still use original SXY keys. */
+	{
+		const float a = openpete_get_lerp_alpha();
+		if (a > 0.0f) {
+			openpete_substitute_delta_t d0 = openpete_render_matcher_substitute_query(p0, a);
+			openpete_substitute_delta_t d1 = openpete_render_matcher_substitute_query(p1, a);
+			openpete_substitute_delta_t d2 = openpete_render_matcher_substitute_query(p2, a);
+			vertex[0].x += d0.dx; vertex[0].y += d0.dy;
+			vertex[1].x += d1.dx; vertex[1].y += d1.dy;
+			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
+		}
+	}
+
 	ScreenCoordsToEmulator(vertex, 3);
 }
 
@@ -305,6 +335,21 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 	RenderCacheProbeVertex(p2);
 	RenderCacheProbeVertex(p3);
 	openpete_render_matcher_observe_quad(p0, p1, p2, p3);
+
+	/* Phase 2.0 substitute (see MakeVertexTriangle for rationale). */
+	{
+		const float a = openpete_get_lerp_alpha();
+		if (a > 0.0f) {
+			openpete_substitute_delta_t d0 = openpete_render_matcher_substitute_query(p0, a);
+			openpete_substitute_delta_t d1 = openpete_render_matcher_substitute_query(p1, a);
+			openpete_substitute_delta_t d2 = openpete_render_matcher_substitute_query(p2, a);
+			openpete_substitute_delta_t d3 = openpete_render_matcher_substitute_query(p3, a);
+			vertex[0].x += d0.dx; vertex[0].y += d0.dy;
+			vertex[1].x += d1.dx; vertex[1].y += d1.dy;
+			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
+			vertex[3].x += d3.dx; vertex[3].y += d3.dy;
+		}
+	}
 
 	ScreenCoordsToEmulator(vertex, 4);
 }

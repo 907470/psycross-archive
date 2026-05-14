@@ -786,6 +786,8 @@ char begin_scene_flag = 0;
 extern "C" void openpete_render_cache_begin_frame(void);
 /* Renderer-foundation Phase 1 (draw-call matcher) — finalize hook. */
 extern "C" void openpete_render_matcher_finalize_frame(void);
+/* Renderer-foundation Phase 2 (substitute) — eager dual-scan hook. */
+extern "C" void openpete_render_matcher_prepare_substitute(void);
 
 char PsyX_BeginScene()
 {
@@ -911,6 +913,10 @@ void PsyX_EndScene()
 		extern unsigned g_openpete_render_matcher_unmatched_new_count;
 		extern unsigned g_openpete_render_matcher_unmatched_dropped_count;
 		extern unsigned g_openpete_render_matcher_no_cache_count;
+		extern unsigned g_openpete_render_matcher_future_anchored_count;
+		extern unsigned g_openpete_render_substitute_pair_count;
+		extern unsigned g_openpete_render_substitute_vert_hit_count;
+		extern unsigned g_openpete_render_substitute_vert_miss_count;
 		extern unsigned openpete_frame;
 		if (g_openpete_render_probe_active == 1) {
 			printf("[render-probe] f%u SUMMARY rtps=%u rtpt=%u mvmva=%u other=%u "
@@ -948,16 +954,34 @@ void PsyX_EndScene()
 			unsigned m_total = g_openpete_render_matcher_matched_count +
 			                   g_openpete_render_matcher_unmatched_new_count;
 			printf("[render-probe] f%u MATCH batches=%u matched=%u new=%u "
-			       "dropped=%u no_cache=%u (match_rate=%.1f%%)\n",
+			       "dropped=%u no_cache=%u future_anchored=%u "
+			       "(match_rate=%.1f%% future_anchor_rate=%.1f%%)\n",
 			       openpete_frame,
 			       g_openpete_render_matcher_batch_count,
 			       g_openpete_render_matcher_matched_count,
 			       g_openpete_render_matcher_unmatched_new_count,
 			       g_openpete_render_matcher_unmatched_dropped_count,
 			       g_openpete_render_matcher_no_cache_count,
+			       g_openpete_render_matcher_future_anchored_count,
 			       m_total
 			           ? 100.0 * (double)g_openpete_render_matcher_matched_count /
 			             (double)m_total
+			           : 0.0,
+			       g_openpete_render_matcher_batch_count
+			           ? 100.0 * (double)g_openpete_render_matcher_future_anchored_count /
+			             (double)g_openpete_render_matcher_batch_count
+			           : 0.0);
+			unsigned sub_total = g_openpete_render_substitute_vert_hit_count +
+			                     g_openpete_render_substitute_vert_miss_count;
+			printf("[render-probe] f%u SUBST pairs=%u vert_hit=%u vert_miss=%u "
+			       "(vert_hit_rate=%.1f%%)\n",
+			       openpete_frame,
+			       g_openpete_render_substitute_pair_count,
+			       g_openpete_render_substitute_vert_hit_count,
+			       g_openpete_render_substitute_vert_miss_count,
+			       sub_total
+			           ? 100.0 * (double)g_openpete_render_substitute_vert_hit_count /
+			             (double)sub_total
 			           : 0.0);
 			fflush(stdout);
 			g_openpete_render_probe_count_rtps  = 0;
