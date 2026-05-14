@@ -784,6 +784,8 @@ char begin_scene_flag = 0;
 
 /* Renderer-foundation Phase 0 (world-space cache) — rotation hook. */
 extern "C" void openpete_render_cache_begin_frame(void);
+/* Renderer-foundation Phase 1 (draw-call matcher) — finalize hook. */
+extern "C" void openpete_render_matcher_finalize_frame(void);
 
 char PsyX_BeginScene()
 {
@@ -849,6 +851,13 @@ void PsyX_EndScene()
 	assert(begin_scene_flag);
 	begin_scene_flag = 0;
 
+	/* Renderer-foundation Phase 1: finalize draw-call matcher BEFORE
+	 * the cache rotates. The matcher reads cache s_prev (which holds
+	 * the world data for the OT just walked); after rotate, s_prev
+	 * becomes the freshly-emitted next-frame data and finalize would
+	 * read wrong values. */
+	openpete_render_matcher_finalize_frame();
+
 	/* Renderer-foundation Phase 0: rotate the world-space cache. We do
 	 * this at EndScene (not BeginScene) because the game fiber's GTE
 	 * vertex transforms (the cache producers) run BEFORE the first
@@ -896,6 +905,12 @@ void PsyX_EndScene()
 		extern unsigned g_openpete_render_cache_hit_count;
 		extern unsigned g_openpete_render_cache_probe_overflow_count;
 		extern unsigned g_openpete_render_cache_matrix_span_id;
+		/* Renderer-foundation Phase 1 (matcher) counters. */
+		extern unsigned g_openpete_render_matcher_batch_count;
+		extern unsigned g_openpete_render_matcher_matched_count;
+		extern unsigned g_openpete_render_matcher_unmatched_new_count;
+		extern unsigned g_openpete_render_matcher_unmatched_dropped_count;
+		extern unsigned g_openpete_render_matcher_no_cache_count;
 		extern unsigned openpete_frame;
 		if (g_openpete_render_probe_active == 1) {
 			printf("[render-probe] f%u SUMMARY rtps=%u rtpt=%u mvmva=%u other=%u "
@@ -930,6 +945,20 @@ void PsyX_EndScene()
 			           : 0.0,
 			       g_openpete_render_cache_probe_overflow_count,
 			       g_openpete_render_cache_matrix_span_id);
+			unsigned m_total = g_openpete_render_matcher_matched_count +
+			                   g_openpete_render_matcher_unmatched_new_count;
+			printf("[render-probe] f%u MATCH batches=%u matched=%u new=%u "
+			       "dropped=%u no_cache=%u (match_rate=%.1f%%)\n",
+			       openpete_frame,
+			       g_openpete_render_matcher_batch_count,
+			       g_openpete_render_matcher_matched_count,
+			       g_openpete_render_matcher_unmatched_new_count,
+			       g_openpete_render_matcher_unmatched_dropped_count,
+			       g_openpete_render_matcher_no_cache_count,
+			       m_total
+			           ? 100.0 * (double)g_openpete_render_matcher_matched_count /
+			             (double)m_total
+			           : 0.0);
 			fflush(stdout);
 			g_openpete_render_probe_count_rtps  = 0;
 			g_openpete_render_probe_count_rtpt  = 0;

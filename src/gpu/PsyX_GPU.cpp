@@ -176,17 +176,27 @@ void MakeLineArray(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, ushort gteidx)
 	ScreenCoordsToEmulator(vertex, 4);
 }
 
-/* Renderer-foundation Phase 0: per-vertex world-space cache probe.
- * Looks up the cache populated by psxrecomp's gte_rtps_internal. Phase 0
- * is observation-only — we don't yet consume the world-space data; just
- * verify hit-rate matches plan exit criteria (~5,400 hits/frame at
- * level_10 active gameplay).
+/* Renderer-foundation Phase 0/1 bridges into openpete_core.
  *
- * Forward-declared so we don't drag the openpete header through PsyX
- * just to call one function. */
+ *  Phase 0 (probe): per-vertex SXY lookup in the cache populated by
+ *    psxrecomp's gte_rtps_internal. Counter-only — verifies hit rate.
+ *
+ *  Phase 1 (matcher): per-prim observe hooks group prims by
+ *    matrix_span_id and match against the previous frame's batches.
+ *    Phase 1 produces stats only; no render changes.
+ *
+ *  Forward-declared (extern "C") so we don't drag openpete headers
+ *  through PsyX's include surface. */
 extern "C" {
     extern int g_openpete_render_probe_active;
-    int openpete_render_cache_lookup_curr_raw(uint32_t sxy_key);
+    int  openpete_render_cache_lookup_curr_raw(uint32_t sxy_key);
+    void openpete_render_matcher_observe_tri(const int16_t* p0,
+                                             const int16_t* p1,
+                                             const int16_t* p2);
+    void openpete_render_matcher_observe_quad(const int16_t* p0,
+                                              const int16_t* p1,
+                                              const int16_t* p2,
+                                              const int16_t* p3);
 }
 static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
     if (g_openpete_render_probe_active != 1) return;
@@ -256,6 +266,7 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 	RenderCacheProbeVertex(p0);
 	RenderCacheProbeVertex(p1);
 	RenderCacheProbeVertex(p2);
+	openpete_render_matcher_observe_tri(p0, p1, p2);
 
 	ScreenCoordsToEmulator(vertex, 3);
 }
@@ -293,6 +304,7 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 	RenderCacheProbeVertex(p1);
 	RenderCacheProbeVertex(p2);
 	RenderCacheProbeVertex(p3);
+	openpete_render_matcher_observe_quad(p0, p1, p2, p3);
 
 	ScreenCoordsToEmulator(vertex, 4);
 }
