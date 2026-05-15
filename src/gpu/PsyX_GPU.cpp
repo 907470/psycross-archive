@@ -200,6 +200,7 @@ extern "C" {
     typedef struct { float dx; float dy; } openpete_substitute_delta_t;
     openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         const int16_t* p, float alpha);
+    int openpete_render_matcher_is_smoothed(const int16_t* p);
     int64_t op_now(void);
     float   openpete_render_compute_alpha(int64_t now_ns);
 }
@@ -226,6 +227,48 @@ static inline float openpete_get_lerp_alpha() {
      * → compute_alpha at that moment). Avoids per-vertex op_now() drift
      * across a multi-ms OT walk. */
     return g_openpete_substitute_alpha_snapshot;
+}
+/* Debug render mode: OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED=1 paints every
+ * batch the interpolation is actively smoothing as untextured solid
+ * red, leaving everything else (frozen / animated / UI) normal. Lets
+ * you SEE the rigid/animated classification the harness can't show.
+ *
+ * Per-prim flow (single-threaded, strict order Vertex→Texcoord→Colour):
+ * MakeVertex* sets s_dbg_prim_red from the matcher predicate; the
+ * Colour stage (always last → overrides stick) consumes it, forcing
+ * red and zeroing page/uv so the GL path renders flat untextured. */
+static int s_dbg_hl_env = -2;          /* -2 unread, 0 off, 1 on */
+static bool s_dbg_prim_red = false;
+static inline bool openpete_dbg_hl_on() {
+	if (s_dbg_hl_env < -1) {
+		const char* e = std::getenv("OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED");
+		s_dbg_hl_env = (e && atoi(e) != 0) ? 1 : 0;
+	}
+	return s_dbg_hl_env == 1;
+}
+static inline void openpete_dbg_mark_prim(const VERTTYPE* a, const VERTTYPE* b,
+                                          const VERTTYPE* c, const VERTTYPE* d) {
+	s_dbg_prim_red = false;
+	if (!openpete_dbg_hl_on()) return;
+	if (openpete_render_matcher_is_smoothed(a) ||
+	    openpete_render_matcher_is_smoothed(b) ||
+	    openpete_render_matcher_is_smoothed(c) ||
+	    (d && openpete_render_matcher_is_smoothed(d)))
+		s_dbg_prim_red = true;
+}
+/* Consumed by every MakeColour* path. Returns true if it recoloured. */
+static inline bool openpete_dbg_apply_red(GrVertex* v, int n) {
+	if (!s_dbg_prim_red) return false;
+	s_dbg_prim_red = false;
+	for (int i = 0; i < n; ++i) {
+		v[i].r = 255; v[i].g = 0; v[i].b = 0; v[i].a = 255;
+		v[i].bright = 1;            /* flat, no 2x texture-modulate */
+		v[i].page = 0;              /* page 0 = untextured path     */
+		v[i].clut = 0;
+		v[i].u = v[i].v = 0;
+		v[i].tcx = v[i].tcy = 0;
+	}
+	return true;
 }
 static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
     if (g_openpete_render_probe_active != 1) return;
@@ -311,6 +354,7 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
 		}
 	}
+	openpete_dbg_mark_prim(p0, p1, p2, nullptr);
 
 	ScreenCoordsToEmulator(vertex, 3);
 }
@@ -364,6 +408,7 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 			vertex[3].x += d3.dx; vertex[3].y += d3.dy;
 		}
 	}
+	openpete_dbg_mark_prim(p0, p1, p2, p3);
 
 	ScreenCoordsToEmulator(vertex, 4);
 }
@@ -643,6 +688,7 @@ void MakeTexcoordQuadZero(GrVertex* vertex, unsigned char dither)
 
 void MakeColourNoShade(GrVertex* vertex, int n)
 {
+	if (openpete_dbg_apply_red(vertex, n)) return;
 	--n;
 	while (n >= 0)
 	{
@@ -711,6 +757,8 @@ void MakeColourTriangle(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, 
 	vertex[2].g = col2[1];
 	vertex[2].b = col2[2];
 	vertex[2].a = 255;
+
+	openpete_dbg_apply_red(vertex, 3);
 }
 
 void MakeColourQuad(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, unsigned char* col1, unsigned char* col2, unsigned char* col3)
@@ -745,6 +793,8 @@ void MakeColourQuad(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, unsi
 	vertex[3].g = col3[1];
 	vertex[3].b = col3[2];
 	vertex[3].a = 255;
+
+	openpete_dbg_apply_red(vertex, 4);
 }
 
 void TriangulateQuad()
