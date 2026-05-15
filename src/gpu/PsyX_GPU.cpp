@@ -201,6 +201,7 @@ extern "C" {
     openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         const int16_t* p, float alpha);
     int openpete_render_matcher_is_smoothed(const int16_t* p);
+    extern int g_openpete_dbg_highlight_smoothed;
     int64_t op_now(void);
     float   openpete_render_compute_alpha(int64_t now_ns);
 }
@@ -237,14 +238,12 @@ static inline float openpete_get_lerp_alpha() {
  * MakeVertex* sets s_dbg_prim_red from the matcher predicate; the
  * Colour stage (always last → overrides stick) consumes it, forcing
  * red and zeroing page/uv so the GL path renders flat untextured. */
-static int s_dbg_hl_env = -2;          /* -2 unread, 0 off, 1 on */
 static bool s_dbg_prim_red = false;
 static inline bool openpete_dbg_hl_on() {
-	if (s_dbg_hl_env < -1) {
-		const char* e = std::getenv("OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED");
-		s_dbg_hl_env = (e && atoi(e) != 0) ? 1 : 0;
-	}
-	return s_dbg_hl_env == 1;
+	/* Live global (CLI/env-seeded in run.c, F9-toggled). Not a
+	 * getenv() — bare env vars don't cross the WSL2→Win32 boundary
+	 * into the .exe, but a real symbol does. */
+	return g_openpete_dbg_highlight_smoothed != 0;
 }
 static inline void openpete_dbg_mark_prim(const VERTTYPE* a, const VERTTYPE* b,
                                           const VERTTYPE* c, const VERTTYPE* d) {
