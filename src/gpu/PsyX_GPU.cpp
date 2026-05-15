@@ -259,8 +259,10 @@ static inline bool openpete_dbg_hl_on() {
 }
 static inline void openpete_dbg_mark_prim(const VERTTYPE* a, const VERTTYPE* b,
                                           const VERTTYPE* c, const VERTTYPE* d) {
+	/* Do NOT reset s_dbg_prim_blue here: mark_prim runs AFTER the
+	 * substitute block (note_applied already set blue for this prim).
+	 * apply_color resets both when it consumes them, so no stale carry. */
 	s_dbg_prim_red = false;
-	s_dbg_prim_blue = false;
 	if (!openpete_dbg_hl_on()) return;
 	if (openpete_render_matcher_is_smoothed(a) ||
 	    openpete_render_matcher_is_smoothed(b) ||
