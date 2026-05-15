@@ -238,7 +238,19 @@ static inline float openpete_get_lerp_alpha() {
  * MakeVertex* sets s_dbg_prim_red from the matcher predicate; the
  * Colour stage (always last → overrides stick) consumes it, forcing
  * red and zeroing page/uv so the GL path renders flat untextured. */
-static bool s_dbg_prim_red = false;
+/* Two-state overlay:
+ *   RED  = prim is in a paired/eligible batch (it COULD interpolate —
+ *          has a per-vertex correspondence) but got no visible motion
+ *          THIS render (alpha≈0, or it didn't actually move).
+ *   BLUE = prim was ACTUALLY interpolated this render — at least one
+ *          vertex received a >=1 px applied delta.
+ * Blue takes precedence (the stronger "frame-gen is doing work" signal).
+ * Watching at high --render-fps: lots of red + little blue ⇒
+ * interpolation is eligible but contributing no visible sub-frame
+ * motion (explains a "still looks 30 fps" feel); blue everywhere ⇒
+ * frame-gen IS displacing geometry. */
+static bool s_dbg_prim_red  = false;
+static bool s_dbg_prim_blue = false;
 static inline bool openpete_dbg_hl_on() {
 	/* Live global (CLI/env-seeded in run.c, F9-toggled). Not a
 	 * getenv() — bare env vars don't cross the WSL2→Win32 boundary
@@ -248,6 +260,7 @@ static inline bool openpete_dbg_hl_on() {
 static inline void openpete_dbg_mark_prim(const VERTTYPE* a, const VERTTYPE* b,
                                           const VERTTYPE* c, const VERTTYPE* d) {
 	s_dbg_prim_red = false;
+	s_dbg_prim_blue = false;
 	if (!openpete_dbg_hl_on()) return;
 	if (openpete_render_matcher_is_smoothed(a) ||
 	    openpete_render_matcher_is_smoothed(b) ||
@@ -255,12 +268,25 @@ static inline void openpete_dbg_mark_prim(const VERTTYPE* a, const VERTTYPE* b,
 	    (d && openpete_render_matcher_is_smoothed(d)))
 		s_dbg_prim_red = true;
 }
-/* Consumed by every MakeColour* path. Returns true if it recoloured. */
-static inline bool openpete_dbg_apply_red(GrVertex* v, int n) {
-	if (!s_dbg_prim_red) return false;
-	s_dbg_prim_red = false;
+/* Called from the substitute apply block with the just-computed
+ * per-vertex deltas; flags the prim blue if any vertex visibly moved. */
+static inline void openpete_dbg_note_applied(float adx, float ady) {
+	if (!openpete_dbg_hl_on()) return;
+	if (adx < 0) adx = -adx;
+	if (ady < 0) ady = -ady;
+	if (adx + ady >= 1.0f) s_dbg_prim_blue = true;
+}
+/* Consumed by every MakeColour* path. Returns true if it recoloured.
+ * Blue (actually moved) wins over red (eligible only). */
+static inline bool openpete_dbg_apply_color(GrVertex* v, int n) {
+	const bool blue = s_dbg_prim_blue, red = s_dbg_prim_red;
+	s_dbg_prim_blue = false;
+	s_dbg_prim_red  = false;
+	if (!blue && !red) return false;
+	const unsigned char R = blue ? 0   : 255;
+	const unsigned char B = blue ? 255 : 0;
 	for (int i = 0; i < n; ++i) {
-		v[i].r = 255; v[i].g = 0; v[i].b = 0; v[i].a = 255;
+		v[i].r = R; v[i].g = 0; v[i].b = B; v[i].a = 255;
 		v[i].bright = 1;            /* flat, no 2x texture-modulate */
 		v[i].page = 0;              /* page 0 = untextured path     */
 		v[i].clut = 0;
@@ -351,6 +377,9 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 			vertex[0].x += d0.dx; vertex[0].y += d0.dy;
 			vertex[1].x += d1.dx; vertex[1].y += d1.dy;
 			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
+			openpete_dbg_note_applied(d0.dx, d0.dy);
+			openpete_dbg_note_applied(d1.dx, d1.dy);
+			openpete_dbg_note_applied(d2.dx, d2.dy);
 		}
 	}
 	openpete_dbg_mark_prim(p0, p1, p2, nullptr);
@@ -405,6 +434,10 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 			vertex[1].x += d1.dx; vertex[1].y += d1.dy;
 			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
 			vertex[3].x += d3.dx; vertex[3].y += d3.dy;
+			openpete_dbg_note_applied(d0.dx, d0.dy);
+			openpete_dbg_note_applied(d1.dx, d1.dy);
+			openpete_dbg_note_applied(d2.dx, d2.dy);
+			openpete_dbg_note_applied(d3.dx, d3.dy);
 		}
 	}
 	openpete_dbg_mark_prim(p0, p1, p2, p3);
@@ -687,7 +720,7 @@ void MakeTexcoordQuadZero(GrVertex* vertex, unsigned char dither)
 
 void MakeColourNoShade(GrVertex* vertex, int n)
 {
-	if (openpete_dbg_apply_red(vertex, n)) return;
+	if (openpete_dbg_apply_color(vertex, n)) return;
 	--n;
 	while (n >= 0)
 	{
@@ -757,7 +790,7 @@ void MakeColourTriangle(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, 
 	vertex[2].b = col2[2];
 	vertex[2].a = 255;
 
-	openpete_dbg_apply_red(vertex, 3);
+	openpete_dbg_apply_color(vertex, 3);
 }
 
 void MakeColourQuad(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, unsigned char* col1, unsigned char* col2, unsigned char* col3)
@@ -793,7 +826,7 @@ void MakeColourQuad(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, unsi
 	vertex[3].b = col3[2];
 	vertex[3].a = 255;
 
-	openpete_dbg_apply_red(vertex, 4);
+	openpete_dbg_apply_color(vertex, 4);
 }
 
 void TriangulateQuad()
