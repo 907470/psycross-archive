@@ -61,15 +61,6 @@ int PsyX_Pad_InitSystem()
 	// init keyboard state
 	g_sdlKeyboardState = SDL_GetKeyboardState(NULL);
 
-	/* Enable SDL's native HIDAPI driver for Steam Controllers (defaults
-	 * off). Without it, the Steam Controller (2026) is left in "lizard
-	 * mode" — its desktop keyboard/mouse emulation — so every face button
-	 * also emits a phantom keystroke that PsyX_Pad_UpdateKeyboardInput
-	 * picks up (e.g. A -> Return -> Start, B -> Space -> Select). The
-	 * HIDAPI driver claims the device, disables lizard mode, and exposes
-	 * it as a proper gamepad. Must be set before gamepad subsystem init. */
-	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
-
 	if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC))
 	{
 		eprinterr("Failed to initialise SDL gamepad subsystem!\n");
@@ -324,8 +315,14 @@ void PsyX_Pad_InternalPadUpdates()
 				controller->switchingAnalog = false;
 			}
 
-			// Update keyboard for PAD
-			if (g_activeKeyboardControllers & (1 << i))
+			/* Update keyboard for PAD — but only for slots WITHOUT a real
+			 * gamepad. A connected controller owns its slot; merging the
+			 * keyboard in too lets a controller that emits phantom keystrokes
+			 * (e.g. the Steam Controller's "lizard mode" desktop emulation)
+			 * bleed bogus presses into gameplay input — pressing the pad's A
+			 * would also fire Start because the controller types Return.
+			 * Slot has no gamepad -> keyboard drives it, as before. */
+			if ((g_activeKeyboardControllers & (1 << i)) && !controller->gc)
 			{
 				u_char kb_lx, kb_ly;
 				bool wasd_held = PsyX_Pad_UpdateKeyboardLeftStick(&kb_lx, &kb_ly);
