@@ -280,7 +280,7 @@ GrPBO		g_glOffscreenPBO;
 #endif
 
 #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
-int GR_InitialiseGLContext(char* windowName, int fullscreen)
+int GR_InitialiseGLContext(char* windowName, int fullscreen, int startHidden)
 {
 	SDL_WindowFlags windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
 
@@ -295,6 +295,12 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen)
 	 * borderless desktop fullscreen by default. */
 	if(g_windowWidth <= 0 || g_windowHeight <= 0)
 		windowFlags |= SDL_WINDOW_FULLSCREEN;
+
+	/* Headless: create the window unmapped so it never flashes on screen
+	 * or steals focus during GL/PSX init. The GL context and FBO rendering
+	 * work fine on a hidden window; the caller just never presents it. */
+	if (startHidden)
+		windowFlags |= SDL_WINDOW_HIDDEN;
 
 	/* SDL3 SDL_CreateWindow no longer takes window position arguments. */
 	g_window = SDL_CreateWindow(windowName, g_windowWidth, g_windowHeight, windowFlags);
@@ -383,7 +389,7 @@ int GR_InitialiseGLExt()
 	return 1;
 }
 
-int GR_InitialiseRender(char* windowName, int width, int height, int fullscreen)
+int GR_InitialiseRender(char* windowName, int width, int height, int fullscreen, int startHidden)
 {
 	g_windowWidth = width;
 	g_windowHeight = height;
@@ -396,7 +402,7 @@ int GR_InitialiseRender(char* windowName, int width, int height, int fullscreen)
 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 1);
 
 #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
-	if (!GR_InitialiseGLContext(windowName, fullscreen))
+	if (!GR_InitialiseGLContext(windowName, fullscreen, startHidden))
 	{
 		eprinterr("Failed to Initialise GL Context!\n");
 		return 0;

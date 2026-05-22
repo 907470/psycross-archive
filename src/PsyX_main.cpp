@@ -98,7 +98,7 @@ extern void PsyX_Pad_Event_ControllerRemoved(Sint32 deviceId);
 extern void PsyX_Pad_Event_ControllerAdded(Sint32 deviceId);
 
 extern int	GR_InitialisePSX();
-extern int	GR_InitialiseRender(char* windowName, int width, int height, int fullscreen);
+extern int	GR_InitialiseRender(char* windowName, int width, int height, int fullscreen, int startHidden);
 
 extern void GR_ResetDevice();
 extern void GR_Shutdown();
@@ -620,7 +620,7 @@ void PsyX_Log_Success(const char* fmt, ...)
 }
 
 
-void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
+void PsyX_Initialise(char* appName, int width, int height, int fullscreen, int startHidden)
 {
 	char windowNameStr[128];
 
@@ -652,7 +652,7 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
 		return;
 	}
 	
-	if (!GR_InitialiseRender(windowNameStr, width, height, fullscreen))
+	if (!GR_InitialiseRender(windowNameStr, width, height, fullscreen, startHidden))
 	{
 		eprinterr("Failed to Intialise Window\n");
 		PsyX_Shutdown();
