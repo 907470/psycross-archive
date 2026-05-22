@@ -6,6 +6,7 @@
 #include "PsyX/PsyX_public.h"
 
 #include <string.h>
+#include <stdlib.h>  /* abs — SDL3 headers no longer leak <stdlib.h> */
 
 extern "C"
 {
@@ -14,8 +15,8 @@ extern int g_padCommEnable;
 
 typedef struct
 {
-	Sint32				deviceId;	// linked device Id
-	SDL_GameController* gc;
+	Sint32				deviceId;	// linked device Id (SDL_JoystickID instance id)
+	SDL_Gamepad*		gc;
 
 	u_char*				padData;
 	bool				switchingAnalog;
@@ -24,7 +25,7 @@ typedef struct
 int						g_cfg_controllerToSlotMapping[MAX_CONTROLLERS] = { -1, -1 };
 
 PsyXController			g_controllers[MAX_CONTROLLERS];
-const u_char*			g_sdlKeyboardState = NULL;
+const bool*				g_sdlKeyboardState = NULL;  /* SDL3: keyboard state is bool[] */
 
 /* Default 0xFFFF = "no override, poll SDL normally". Host can stomp this
  * per-frame to drive scripted input (--bk2 / future record). C linkage so
@@ -44,7 +45,7 @@ extern "C" unsigned short PsyX_Pad_GetLastP1Bits(void)
 }
 
 u_short PsyX_Pad_UpdateKeyboardInput();
-void	PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad);
+void	PsyX_Pad_UpdateGameControllerInput(SDL_Gamepad* cont, LPPADRAW pad);
 void	PsyX_Pad_Event_ControllerAdded(Sint32 deviceId);
 static bool PsyX_Pad_UpdateKeyboardLeftStick(u_char* outX, u_char* outY);
 
@@ -60,14 +61,14 @@ int PsyX_Pad_InitSystem()
 	// init keyboard state
 	g_sdlKeyboardState = SDL_GetKeyboardState(NULL);
 
-	if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) < 0)
+	if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC))
 	{
-		eprinterr("Failed to initialise SDL GameController subsystem!\n");
+		eprinterr("Failed to initialise SDL gamepad subsystem!\n");
 		return 0;
 	}
 
 	// Add more controllers from custom file
-	SDL_GameControllerAddMappingsFromFile("gamecontrollerdb.txt");
+	SDL_AddGamepadMappingsFromFile("gamecontrollerdb.txt");
 
 	/* Defensive cold-plug enumeration. SDL2 normally synthesizes
 	 * CONTROLLERDEVICEADDED for already-present devices when the
@@ -83,14 +84,20 @@ int PsyX_Pad_InitSystem()
 	 * fires later. Symptom: controller works iff (re)attached AFTER
 	 * launch.
 	 *
-	 * Walking SDL_NumJoysticks() here closes the cold-plug case
+	 * Walking SDL_GetGamepads() here closes the cold-plug case
 	 * directly, independent of whichever backend's enumeration timing
-	 * you ended up with. PsyX_Pad_OpenController is idempotent. */
-	int n = SDL_NumJoysticks();
-	for (int j = 0; j < n; j++)
+	 * you ended up with. PsyX_Pad_OpenController is idempotent.
+	 *
+	 * SDL3: SDL_GetGamepads returns instance ids of gamepad-capable
+	 * devices only, so the old per-index SDL_IsGameController filter is
+	 * no longer needed. */
+	int n = 0;
+	SDL_JoystickID* gamepads = SDL_GetGamepads(&n);
+	if (gamepads)
 	{
-		if (SDL_IsGameController(j))
-			PsyX_Pad_Event_ControllerAdded(j);
+		for (int j = 0; j < n; j++)
+			PsyX_Pad_Event_ControllerAdded(gamepads[j]);
+		SDL_free(gamepads);
 	}
 
 	return 1;
@@ -99,35 +106,37 @@ int PsyX_Pad_InitSystem()
 // Prints controller list into console
 void PsyX_Pad_Debug_ListControllers()
 {
-	int numJoysticks = SDL_NumJoysticks();
-	int numHaptics = SDL_NumHaptics();
+	int numJoysticks = 0;
+	SDL_JoystickID* gamepads = SDL_GetGamepads(&numJoysticks);
+	int numHaptics = 0;
+	SDL_HapticID* haptics = SDL_GetHaptics(&numHaptics);
 
-	if (numJoysticks)
+	if (numJoysticks && gamepads)
 	{
-		eprintf("SDL GameController list:\n");
+		eprintf("SDL gamepad list:\n");
 
 		for (int i = 0; i < numJoysticks; i++)
 		{
-			if (SDL_IsGameController(i))
-			{
-				eprintinfo("  %d '%s'\n", i, SDL_GameControllerNameForIndex(i));
-			}
+			eprintinfo("  %u '%s'\n", gamepads[i], SDL_GetGamepadNameForID(gamepads[i]));
 		}
 	}
 	else
-		eprintwarn("No SDL GameControllers found!\n");
+		eprintwarn("No SDL gamepads found!\n");
 
-	if (numHaptics)
+	if (numHaptics && haptics)
 	{
 		eprintf("SDL haptic list:\n");
 
 		for (int i = 0; i < numHaptics; i++)
 		{
-			eprintinfo("  %d '%s'\n", i, SDL_HapticName(i));
+			eprintinfo("  %u '%s'\n", haptics[i], SDL_GetHapticNameForID(haptics[i]));
 		}
 	}
 	else
 		eprintwarn("No SDL haptics found!\n");
+
+	SDL_free(gamepads);
+	SDL_free(haptics);
 }
 
 // Opens specific system controller and assigns to specified slot
@@ -140,7 +149,7 @@ void PsyX_Pad_OpenController(Sint32 deviceId, int slot)
 		return;
 	}
 
-	controller->gc = SDL_GameControllerOpen(deviceId);
+	controller->gc = SDL_OpenGamepad(deviceId);
 	controller->switchingAnalog = false;
 
 	if (controller->gc)
@@ -155,7 +164,7 @@ void PsyX_Pad_OpenController(Sint32 deviceId, int slot)
 void PsyX_Pad_CloseController(int slot)
 {
 	PsyXController* controller = &g_controllers[slot];
-	SDL_GameControllerClose(controller->gc);
+	SDL_CloseGamepad(controller->gc);
 
 	controller->gc = NULL;
 }
@@ -352,11 +361,11 @@ void PsyX_Pad_InternalPadUpdates()
 }
 
 
-int GetControllerButtonState(SDL_GameController* cont, int buttonOrAxis)
+int GetControllerButtonState(SDL_Gamepad* cont, int buttonOrAxis)
 {
 	if (buttonOrAxis & CONTROLLER_MAP_FLAG_AXIS)
 	{
-		int value = SDL_GameControllerGetAxis(cont, (SDL_GameControllerAxis)(buttonOrAxis & ~(CONTROLLER_MAP_FLAG_AXIS | CONTROLLER_MAP_FLAG_INVERSE)));
+		int value = SDL_GetGamepadAxis(cont, (SDL_GamepadAxis)(buttonOrAxis & ~(CONTROLLER_MAP_FLAG_AXIS | CONTROLLER_MAP_FLAG_INVERSE)));
 
 		if (abs(value) > 500 && (buttonOrAxis & CONTROLLER_MAP_FLAG_INVERSE))
 			value *= -1;
@@ -364,10 +373,10 @@ int GetControllerButtonState(SDL_GameController* cont, int buttonOrAxis)
 		return value;
 	}
 
-	return SDL_GameControllerGetButton(cont, (SDL_GameControllerButton)buttonOrAxis) * 32767;
+	return SDL_GetGamepadButton(cont, (SDL_GamepadButton)buttonOrAxis) * 32767;
 }
 
-void PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad)
+void PsyX_Pad_UpdateGameControllerInput(SDL_Gamepad* cont, LPPADRAW pad)
 {
 	short leftX, leftY, rightX, rightY;
 	u_short ret = 0xFFFF;
@@ -543,7 +552,7 @@ int PsyX_Pad_GetStatus(int mtap, int slot)
 
 	controller = &g_controllers[slot];
 
-	if (controller->gc && SDL_GameControllerGetAttached(controller->gc))
+	if (controller->gc && SDL_GamepadConnected(controller->gc))
 		return 1;
 
 	return 0;
@@ -566,5 +575,5 @@ void PsyX_Pad_Vibrate(int mtap, int slot, unsigned char* table, int len)
 	if (freq_high != 0 && freq_high < 4096)
 		freq_high = 4096;
 
-	SDL_GameControllerRumble(controller->gc, freq_low, freq_high, 200);
+	SDL_RumbleGamepad(controller->gc, freq_low, freq_high, 200);
 }

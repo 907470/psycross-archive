@@ -282,7 +282,7 @@ GrPBO		g_glOffscreenPBO;
 #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
 int GR_InitialiseGLContext(char* windowName, int fullscreen)
 {
-	int windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+	SDL_WindowFlags windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
 
 #if defined(__ANDROID__)
 	windowFlags |= SDL_WINDOW_FULLSCREEN;
@@ -291,10 +291,13 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen)
 		windowFlags |= SDL_WINDOW_FULLSCREEN;
 #endif
 
+	/* SDL3 dropped SDL_WINDOW_FULLSCREEN_DESKTOP; SDL_WINDOW_FULLSCREEN is
+	 * borderless desktop fullscreen by default. */
 	if(g_windowWidth <= 0 || g_windowHeight <= 0)
-		windowFlags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+		windowFlags |= SDL_WINDOW_FULLSCREEN;
 
-	g_window = SDL_CreateWindow(windowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g_windowWidth, g_windowHeight, windowFlags);
+	/* SDL3 SDL_CreateWindow no longer takes window position arguments. */
+	g_window = SDL_CreateWindow(windowName, g_windowWidth, g_windowHeight, windowFlags);
 
 	if (g_window == NULL)
 	{
@@ -306,13 +309,13 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen)
 
 #if defined(__ANDROID__)
 	//Override to full screen.
-	SDL_DisplayMode displayMode;
-	if (SDL_GetCurrentDisplayMode(0, &displayMode) == 0)
+	const SDL_DisplayMode* displayMode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+	if (displayMode)
 	{
-		screenWidth = displayMode.w;
-		windowWidth = displayMode.w;
-		screenHeight = displayMode.h;
-		windowHeight = displayMode.h;
+		screenWidth = displayMode->w;
+		windowWidth = displayMode->w;
+		screenHeight = displayMode->h;
+		windowHeight = displayMode->h;
 	}
 #endif
 
@@ -386,7 +389,7 @@ int GR_InitialiseRender(char* windowName, int width, int height, int fullscreen)
 	g_windowHeight = height;
 
 	// Due to debugging in fullscreen
-	SDL_SetHint(SDL_HINT_ALLOW_TOPMOST, "0");
+	SDL_SetHint(SDL_HINT_WINDOW_ALLOW_TOPMOST, "0");
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
 #if USE_OPENGL

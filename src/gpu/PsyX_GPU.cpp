@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <math.h>
 #include <string.h>
+#include <cstdlib>  /* std::getenv — SDL3 headers no longer leak <stdlib.h> */
 
 #define GET_TPAGE_FORMAT(tpage) ((TexFormat)((tpage >> 7) & 0x3))
 #define GET_TPAGE_BLEND(tpage)  ((BlendMode)(((tpage >> 5) & 3) + 1))

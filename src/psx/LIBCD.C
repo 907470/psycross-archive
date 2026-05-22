@@ -840,7 +840,7 @@ int g_isCdSectorDataRead = 0;
 
 #ifndef __EMSCRIPTEN__
 SDL_Thread* g_cdSpoolerPCThread = NULL;
-SDL_mutex* g_cdSpoolerMutex = NULL;
+SDL_Mutex* g_cdSpoolerMutex = NULL;
 
 #define CD_LOCK_MUTEX()			SDL_LockMutex(g_cdSpoolerMutex)
 #define CD_UNLOCK_MUTEX()		SDL_UnlockMutex(g_cdSpoolerMutex)

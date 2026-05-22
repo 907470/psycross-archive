@@ -44,9 +44,9 @@ target_include_directories(psycross_static PUBLIC "include" "include/psx")
 # pcsx_redux_compat.h's PGXP_pushSXYZ2s adapter.
 target_compile_definitions(psycross_static PUBLIC USE_PGXP=1)
 
-find_package(SDL2 REQUIRED)
-target_link_libraries(psycross_static ${SDL2_LIBRARIES})
-target_include_directories(psycross_static PRIVATE ${SDL2_INCLUDE_DIRS})
+# SDL3 (built from openpete's third_party/SDL submodule). The SDL3::SDL3
+# target carries its own include dirs transitively.
+target_link_libraries(psycross_static SDL3::SDL3-static)
 
 find_package(OpenAL REQUIRED)
 target_link_libraries(psycross_static ${OPENAL_LIBRARY})

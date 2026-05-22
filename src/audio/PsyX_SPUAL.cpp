@@ -70,7 +70,7 @@ typedef struct
 } SPUMemory;
 
 static SPUMemory s_SpuMemory;
-static SDL_mutex* g_SpuMutex = NULL;
+static SDL_Mutex* g_SpuMutex = NULL;
 static int g_spuInit = 0;
 static int s_spuMallocVal = 0;
 

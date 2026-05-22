@@ -3,7 +3,7 @@
 #include "../PsyX_main.h"
 #include "PsyX/PsyX_public.h"
 
-#include <SDL_timer.h>
+#include <SDL3/SDL_timer.h>
 #include <stdint.h>
 
 #ifdef DEBUG

@@ -21,9 +21,10 @@
 
 #include <assert.h>
 #include <string.h>
+#include <stdlib.h>  /* malloc/free/exit — SDL3 headers no longer leak these */
 
 #include <stdio.h>
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #include "PsyX/PsyX_render.h"
 
@@ -79,7 +80,7 @@ enum EPsxCounters
 volatile int g_psxSysCounters[PsxCounter_Num];
 
 SDL_Thread* g_intrThread = NULL;
-SDL_mutex* g_intrMutex = NULL;
+SDL_Mutex* g_intrMutex = NULL;
 volatile char g_stopIntrThread = 0;
 
 #if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
@@ -259,31 +260,34 @@ static void PsyX_Sys_InitialiseInput()
 	g_cfg_keyboardMapping.kc_axis_left_right = SDL_SCANCODE_D;
 
 	//----------------
-	g_cfg_controllerMapping.gc_square = SDL_CONTROLLER_BUTTON_X;
-	g_cfg_controllerMapping.gc_circle = SDL_CONTROLLER_BUTTON_B;
-	g_cfg_controllerMapping.gc_triangle = SDL_CONTROLLER_BUTTON_Y;
-	g_cfg_controllerMapping.gc_cross = SDL_CONTROLLER_BUTTON_A;
+	/* SDL3 renamed the face buttons positionally: A/B/X/Y → SOUTH/EAST/
+	 * WEST/NORTH. PSX square=left→WEST, circle=right→EAST, triangle=top→
+	 * NORTH, cross=bottom→SOUTH — the physical mapping is unchanged. */
+	g_cfg_controllerMapping.gc_square = SDL_GAMEPAD_BUTTON_WEST;
+	g_cfg_controllerMapping.gc_circle = SDL_GAMEPAD_BUTTON_EAST;
+	g_cfg_controllerMapping.gc_triangle = SDL_GAMEPAD_BUTTON_NORTH;
+	g_cfg_controllerMapping.gc_cross = SDL_GAMEPAD_BUTTON_SOUTH;
 
-	g_cfg_controllerMapping.gc_l1 = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
-	g_cfg_controllerMapping.gc_l2 = SDL_CONTROLLER_AXIS_TRIGGERLEFT | CONTROLLER_MAP_FLAG_AXIS;
-	g_cfg_controllerMapping.gc_l3 = SDL_CONTROLLER_BUTTON_LEFTSTICK;
+	g_cfg_controllerMapping.gc_l1 = SDL_GAMEPAD_BUTTON_LEFT_SHOULDER;
+	g_cfg_controllerMapping.gc_l2 = SDL_GAMEPAD_AXIS_LEFT_TRIGGER | CONTROLLER_MAP_FLAG_AXIS;
+	g_cfg_controllerMapping.gc_l3 = SDL_GAMEPAD_BUTTON_LEFT_STICK;
 
-	g_cfg_controllerMapping.gc_r1 = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
-	g_cfg_controllerMapping.gc_r2 = SDL_CONTROLLER_AXIS_TRIGGERRIGHT | CONTROLLER_MAP_FLAG_AXIS;
-	g_cfg_controllerMapping.gc_r3 = SDL_CONTROLLER_BUTTON_RIGHTSTICK;
+	g_cfg_controllerMapping.gc_r1 = SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
+	g_cfg_controllerMapping.gc_r2 = SDL_GAMEPAD_AXIS_RIGHT_TRIGGER | CONTROLLER_MAP_FLAG_AXIS;
+	g_cfg_controllerMapping.gc_r3 = SDL_GAMEPAD_BUTTON_RIGHT_STICK;
 
-	g_cfg_controllerMapping.gc_dpad_up = SDL_CONTROLLER_BUTTON_DPAD_UP;
-	g_cfg_controllerMapping.gc_dpad_down = SDL_CONTROLLER_BUTTON_DPAD_DOWN;
-	g_cfg_controllerMapping.gc_dpad_left = SDL_CONTROLLER_BUTTON_DPAD_LEFT;
-	g_cfg_controllerMapping.gc_dpad_right = SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+	g_cfg_controllerMapping.gc_dpad_up = SDL_GAMEPAD_BUTTON_DPAD_UP;
+	g_cfg_controllerMapping.gc_dpad_down = SDL_GAMEPAD_BUTTON_DPAD_DOWN;
+	g_cfg_controllerMapping.gc_dpad_left = SDL_GAMEPAD_BUTTON_DPAD_LEFT;
+	g_cfg_controllerMapping.gc_dpad_right = SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
 
-	g_cfg_controllerMapping.gc_select = SDL_CONTROLLER_BUTTON_BACK;
-	g_cfg_controllerMapping.gc_start = SDL_CONTROLLER_BUTTON_START;
+	g_cfg_controllerMapping.gc_select = SDL_GAMEPAD_BUTTON_BACK;
+	g_cfg_controllerMapping.gc_start = SDL_GAMEPAD_BUTTON_START;
 
-	g_cfg_controllerMapping.gc_axis_left_x = SDL_CONTROLLER_AXIS_LEFTX | CONTROLLER_MAP_FLAG_AXIS;
-	g_cfg_controllerMapping.gc_axis_left_y = SDL_CONTROLLER_AXIS_LEFTY | CONTROLLER_MAP_FLAG_AXIS;
-	g_cfg_controllerMapping.gc_axis_right_x = SDL_CONTROLLER_AXIS_RIGHTX | CONTROLLER_MAP_FLAG_AXIS;
-	g_cfg_controllerMapping.gc_axis_right_y = SDL_CONTROLLER_AXIS_RIGHTY | CONTROLLER_MAP_FLAG_AXIS;
+	g_cfg_controllerMapping.gc_axis_left_x = SDL_GAMEPAD_AXIS_LEFTX | CONTROLLER_MAP_FLAG_AXIS;
+	g_cfg_controllerMapping.gc_axis_left_y = SDL_GAMEPAD_AXIS_LEFTY | CONTROLLER_MAP_FLAG_AXIS;
+	g_cfg_controllerMapping.gc_axis_right_x = SDL_GAMEPAD_AXIS_RIGHTX | CONTROLLER_MAP_FLAG_AXIS;
+	g_cfg_controllerMapping.gc_axis_right_y = SDL_GAMEPAD_AXIS_RIGHTY | CONTROLLER_MAP_FLAG_AXIS;
 
 	PsyX_Pad_InitSystem();
 }
@@ -303,7 +307,7 @@ int PsyX_LookupKeyboardMapping(const char* str, int default_value)
 		if (!_stricmp("NONE", str))
 			return SDL_SCANCODE_UNKNOWN;
 
-		for (i = 0; i < SDL_NUM_SCANCODES; i++)
+		for (i = 0; i < SDL_SCANCODE_COUNT; i++)
 		{
 			scancodeName = SDL_GetScancodeName((SDL_Scancode)i);
 
@@ -352,25 +356,25 @@ int PsyX_LookupGameControllerMapping(const char* str, int default_value)
 		}
 
 		if (!_stricmp("NONE", str))
-			return SDL_CONTROLLER_BUTTON_INVALID;
+			return SDL_GAMEPAD_BUTTON_INVALID;
 
 		// check buttons
-		for (i = 0; i < SDL_CONTROLLER_BUTTON_MAX; i++)
+		for (i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; i++)
 		{
-			buttonOrAxisName = SDL_GameControllerGetStringForButton((SDL_GameControllerButton)i);
+			buttonOrAxisName = SDL_GetGamepadStringForButton((SDL_GamepadButton)i);
 
-			if (strlen(buttonOrAxisName) && !_stricmp(buttonOrAxisName, str))
+			if (buttonOrAxisName && strlen(buttonOrAxisName) && !_stricmp(buttonOrAxisName, str))
 			{
 				return i;
 			}
 		}
 
 		// Check axes
-		for (i = 0; i < SDL_CONTROLLER_AXIS_MAX; i++)
+		for (i = 0; i < SDL_GAMEPAD_AXIS_COUNT; i++)
 		{
-			buttonOrAxisName = SDL_GameControllerGetStringForAxis((SDL_GameControllerAxis)i);
+			buttonOrAxisName = SDL_GetGamepadStringForAxis((SDL_GamepadAxis)i);
 
-			if (strlen(buttonOrAxisName) && !_stricmp(buttonOrAxisName, axisStr))
+			if (buttonOrAxisName && strlen(buttonOrAxisName) && !_stricmp(buttonOrAxisName, axisStr))
 			{
 				return i | axisFlags;
 			}
@@ -639,11 +643,9 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
 	eprintinfo("Initialising Psy-X %d.%d\n", PSYX_MAJOR_VERSION, PSYX_MINOR_VERSION);
 	eprintinfo("Build date: %s:%s\n", PSYX_COMPILE_DATE, PSYX_COMPILE_TIME);
 
-#if defined(__EMSCRIPTEN__)
-	SDL_SetHint(SDL_HINT_EMSCRIPTEN_ASYNCIFY, "0");
-#endif
-	
-	if (SDL_Init(SDL_INIT_VIDEO) != 0)
+	/* SDL3 removed SDL_HINT_EMSCRIPTEN_ASYNCIFY. */
+
+	if (!SDL_Init(SDL_INIT_VIDEO))
 	{
 		eprinterr("Failed to initialise SDL\n");
 		PsyX_Shutdown();
@@ -677,7 +679,7 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
 	atexit(PsyX_Shutdown);
 
 	// disable cursor visibility
-	SDL_ShowCursor(0);
+	SDL_HideCursor();
 }
 
 void PsyX_GetScreenSize(int* screenWidth, int* screenHeight)
@@ -703,50 +705,47 @@ void PsyX_Sys_DoPollEvent()
 	SDL_Event event;
 	while (SDL_PollEvent(&event))
 	{
+		/* SDL3: window events are top-level types (no SDL_WINDOWEVENT
+		 * wrapper); the keysym struct is flattened onto event.key. */
 		switch (event.type)
 		{
-			case SDL_CONTROLLERDEVICEADDED:
-				PsyX_Pad_Event_ControllerAdded(event.cdevice.which);
+			case SDL_EVENT_GAMEPAD_ADDED:
+				PsyX_Pad_Event_ControllerAdded(event.gdevice.which);
 				break;
-			case SDL_CONTROLLERDEVICEREMOVED:
-				PsyX_Pad_Event_ControllerRemoved(event.cdevice.which);
+			case SDL_EVENT_GAMEPAD_REMOVED:
+				PsyX_Pad_Event_ControllerRemoved(event.gdevice.which);
 				break;
-			case SDL_QUIT:
+			case SDL_EVENT_QUIT:
 				PsyX_Exit();
 				break;
-			case SDL_WINDOWEVENT:
-				switch (event.window.event)
-				{
-				case SDL_WINDOWEVENT_RESIZED:
-					g_windowWidth = event.window.data1;
-					g_windowHeight = event.window.data2;
-					GR_ResetDevice();
-					break;
-				case SDL_WINDOWEVENT_CLOSE:
-					PsyX_Exit();
-					break;
-				}
+			case SDL_EVENT_WINDOW_RESIZED:
+				g_windowWidth = event.window.data1;
+				g_windowHeight = event.window.data2;
+				GR_ResetDevice();
 				break;
-			case SDL_MOUSEMOTION:
+			case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+				PsyX_Exit();
+				break;
+			case SDL_EVENT_MOUSE_MOTION:
 
-				PsyX_Sys_DoDebugMouseMotion(event.motion.x, event.motion.y);
+				PsyX_Sys_DoDebugMouseMotion((int)event.motion.x, (int)event.motion.y);
 				break;
-			case SDL_KEYDOWN:
-			case SDL_KEYUP:
+			case SDL_EVENT_KEY_DOWN:
+			case SDL_EVENT_KEY_UP:
 			{
-				int nKey = event.key.keysym.scancode;
+				int nKey = event.key.scancode;
 
 				if (nKey == SDL_SCANCODE_RALT)
 				{
-					g_altKeyState = (event.type == SDL_KEYDOWN);
+					g_altKeyState = (event.type == SDL_EVENT_KEY_DOWN);
 				}
 				else if (nKey == SDL_SCANCODE_RETURN)
 				{
-					if (g_altKeyState && event.type == SDL_KEYDOWN)
+					if (g_altKeyState && event.type == SDL_EVENT_KEY_DOWN)
 					{
-						int fullscreen = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN > 0;
+						bool fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
 
-						SDL_SetWindowFullscreen(g_window, fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+						SDL_SetWindowFullscreen(g_window, !fullscreen);
 
 						SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
 						GR_ResetDevice();
@@ -762,15 +761,15 @@ void PsyX_Sys_DoPollEvent()
 				else if (nKey == SDL_SCANCODE_RALT)
 					nKey = SDL_SCANCODE_LALT;
 
-				if (g_cfg_gameOnTextInput && nKey == SDL_SCANCODE_BACKSPACE && event.type == SDL_KEYDOWN)
+				if (g_cfg_gameOnTextInput && nKey == SDL_SCANCODE_BACKSPACE && event.type == SDL_EVENT_KEY_DOWN)
 				{
 					(g_cfg_gameOnTextInput)(NULL);
 				}
 
-				PsyX_Sys_DoDebugKeys(nKey, (event.type == SDL_KEYUP) ? 0 : 1);
+				PsyX_Sys_DoDebugKeys(nKey, (event.type == SDL_EVENT_KEY_UP) ? 0 : 1);
 				break;
 			}
-			case SDL_TEXTINPUT:
+			case SDL_EVENT_TEXT_INPUT:
 			{
 				if(g_cfg_gameOnTextInput)
 					(g_cfg_gameOnTextInput)(event.text.text);
@@ -806,11 +805,15 @@ char PsyX_BeginScene()
 		//		target 60fps, 50hz screen = no interval (tearing)
 		//		target 30fps, 50hz screen = 60hz interval (less tearing)
 		//		target 30fps, 60hz screen = 30hz interval (no tearing)
-		SDL_DisplayMode curMode;
-		if (SDL_GetWindowDisplayMode(g_window, &curMode) == 0)
+		/* SDL3: query the current mode of the display the window is on.
+		 * SDL_GetWindowDisplayMode is gone; SDL_GetWindowFullscreenMode
+		 * would return NULL for a windowed app, so go via the display. */
+		const SDL_DisplayMode* curMode =
+			SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(g_window));
+		if (curMode)
 		{
 			const int mode_frequency = g_vmode == MODE_NTSC ? VBLANK_FREQUENCY_NTSC : VBLANK_FREQUENCY_PAL;
-			if (curMode.refresh_rate < mode_frequency)
+			if (curMode->refresh_rate < mode_frequency)
 				swapInterval--;
 		}
 
@@ -1030,10 +1033,15 @@ void PsyX_TakeScreenshot()
 	glReadPixels(0, 0, g_windowWidth, g_windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixels);	// FIXME: is that correct format?
 #endif
 
-	SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(pixels, g_windowWidth, g_windowHeight, 8 * 4, g_windowWidth * 4, 0, 0, 0, 0);
+#if defined(RENDERER_OGL)
+	const SDL_PixelFormat shotFmt = SDL_PIXELFORMAT_ARGB8888;  /* GL_BGRA bytes */
+#else
+	const SDL_PixelFormat shotFmt = SDL_PIXELFORMAT_ABGR8888;  /* GL_RGBA bytes */
+#endif
+	SDL_Surface* surface = SDL_CreateSurfaceFrom(g_windowWidth, g_windowHeight, shotFmt, pixels, g_windowWidth * 4);
 
 	SDL_SaveBMP(surface, "SCREENSHOT.BMP");
-	SDL_FreeSurface(surface);
+	SDL_DestroySurface(surface);
 
 	free(pixels);
 }
@@ -1129,7 +1137,7 @@ uint PsyX_CalcFPS()
 {
 #define FPS_INTERVAL 1.0
 
-	static unsigned int lastTime = 0;
+	static Uint64 lastTime = 0;  /* SDL3: SDL_GetTicks is 64-bit */
 	static unsigned int currentFps = 0;
 	static unsigned int passedFrames = 0;
 
@@ -1206,7 +1214,7 @@ void PsyX_Shutdown()
 	g_window = NULL;
 
 	GR_Shutdown();
-	SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
+	SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
 
 	// Tear down audio before SDL_Quit so OpenAL's PulseAudio backend gets a
 	// clean pa_stream_disconnect / pa_context_disconnect. Without this the
