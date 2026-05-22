@@ -61,6 +61,15 @@ int PsyX_Pad_InitSystem()
 	// init keyboard state
 	g_sdlKeyboardState = SDL_GetKeyboardState(NULL);
 
+	/* Enable SDL's native HIDAPI driver for Steam Controllers (defaults
+	 * off). Without it, the Steam Controller (2026) is left in "lizard
+	 * mode" — its desktop keyboard/mouse emulation — so every face button
+	 * also emits a phantom keystroke that PsyX_Pad_UpdateKeyboardInput
+	 * picks up (e.g. A -> Return -> Start, B -> Space -> Select). The
+	 * HIDAPI driver claims the device, disables lizard mode, and exposes
+	 * it as a proper gamepad. Must be set before gamepad subsystem init. */
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
+
 	if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC))
 	{
 		eprinterr("Failed to initialise SDL gamepad subsystem!\n");
