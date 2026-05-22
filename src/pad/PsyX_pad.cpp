@@ -19,7 +19,6 @@ typedef struct
 	SDL_Gamepad*		gc;
 
 	u_char*				padData;
-	bool				switchingAnalog;
 } PsyXController;
 
 int						g_cfg_controllerToSlotMapping[MAX_CONTROLLERS] = { -1, -1 };
@@ -150,7 +149,6 @@ void PsyX_Pad_OpenController(Sint32 deviceId, int slot)
 	}
 
 	controller->gc = SDL_OpenGamepad(deviceId);
-	controller->switchingAnalog = false;
 
 	if (controller->gc)
 	{
@@ -184,7 +182,9 @@ void PsyX_Pad_InitPad(int slot, u_char* padData)
 		bool wasConnected = (pad->id == 0x41 || pad->id == 0x73);
 
 		if(!wasConnected)
-			pad->id = slot == 0 ? 0x41 : 0xFF;	// since keyboard is a main controller - it's always on
+			// slot 0 is always present (keyboard is the main controller);
+			// 0x73 = analog pad — analog mode is on by default.
+			pad->id = slot == 0 ? 0x73 : 0xFF;
 
 		// only reset buttons
 		pad->buttons[0] = 0xFF;
@@ -285,36 +285,6 @@ void PsyX_Pad_InternalPadUpdates()
 
 			PsyX_Pad_UpdateGameControllerInput(controller->gc, pad);
 
-			ushort test = *(u_short*)pad->buttons;
-
-			// In order to switch From/To analog user has to use left gamepad stick
-
-			// Select + Start pressed
-			if ((test & 0x1) == 0 && (test & 0x8) == 0)
-			{
-				*(u_short*)pad->buttons = 0xffff;
-
-				if (!controller->switchingAnalog)
-				{
-					// switch to analog state
-					if (pad->id == 0x41)
-					{
-						eprintf("Port %d ANALOG: ON\n", i + 1);
-						pad->id = 0x73;
-					}
-					else
-					{
-						eprintf("Port %d ANALOG: OFF\n", i + 1);
-						pad->id = 0x41;
-					}
-				}
-				controller->switchingAnalog = true;
-			}
-			else
-			{
-				controller->switchingAnalog = false;
-			}
-
 			/* Update keyboard for PAD — but only for slots WITHOUT a real
 			 * gamepad. A connected controller owns its slot; merging the
 			 * keyboard in too lets a controller that emits phantom keystrokes
@@ -329,13 +299,9 @@ void PsyX_Pad_InternalPadUpdates()
 
 				if (wasd_held)
 				{
-					/* WASD held: ensure analog mode so the game samples
-					 * pad->analog[2..3], then write the stick values. */
-					if (pad->id != 0x73)
-					{
-						eprintf("Port %d ANALOG: ON (keyboard)\n", i + 1);
-						pad->id = 0x73;
-					}
+					/* WASD -> left analog stick. The pad is always in
+					 * analog mode (see PsyX_Pad_InitPad), so the game
+					 * samples pad->analog[2..3]. */
 					pad->analog[2] = kb_lx;
 					pad->analog[3] = kb_ly;
 					pad->status = 0;
@@ -344,17 +310,6 @@ void PsyX_Pad_InternalPadUpdates()
 				if (kbInputs != 0xffff)
 				{
 					pad->status = 0;	// PadStateStable?
-
-					/* Don't force back to digital while WASD is held —
-					 * doing so would drop the analog values we just wrote. */
-					if (!wasd_held && pad->id != 0x41)
-					{
-						if (pad->id != 0x73)
-							eprintf("Port %d ANALOG: OFF\n", i + 1);
-
-						pad->id = 0x41; // force disable analog
-					}
-
 					*(u_short*)pad->buttons &= kbInputs;
 				}
 			}
