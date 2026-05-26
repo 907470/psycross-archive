@@ -107,15 +107,19 @@ inline void ScreenCoordsToEmulator(GrVertex* vertex, int count)
 	float w, h;
 	DrawEnvDimensions(w, h);
 
+	/* Day 4 Phase 2: normalize every vertex unconditionally. Both shader
+	 * branches consume the SAME ortho `Projection` matrix (the perspective
+	 * branch composes (Projection * pos).xyz * w into gl_Position), so
+	 * both need the same input coord convention: raw/disp.w - 0.5.
+	 *
+	 * Pre-Phase-2 this function skipped scr_h > 0 verts as a vestige of
+	 * upstream PsyCross's perspective path, which expected MAC/128
+	 * pre-projection coords; under our shim the cache lookup writes raw
+	 * PSX pixel space regardless of perspective-vs-ortho gating, so the
+	 * skip caused canonical-context verts to feed un-normalized coords
+	 * into Projection and fly off-screen (90% geometry missing). */
 	while (count--)
 	{
-		/* Skip verts that were already resolved by ApplyVertexPGXP via the
-		 * renderer-foundation cache — those have x/y in MAC/128 pre-projection
-		 * space (consumed directly by the perspective shader branch), not
-		 * raw PSX pixel coords. The fallback (cache-miss) path leaves
-		 * scr_h = 0, which gates the shader's `a_zw.y > 100.0` check onto
-		 * the orthographic branch — and is the same sentinel we use here. */
-		if (vertex[count].scr_h > 0.0f) continue;
 		vertex[count].x = vertex[count].x / w - 0.5f;
 		vertex[count].y = vertex[count].y / h - 0.5f;
 	}
@@ -360,7 +364,12 @@ inline void ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, us
 			 * with the float-precision projection. */
 			v->x = vd.px + ofsX;
 			v->y = vd.py + ofsY;
-			v->scr_h = 0.0f;   /* shader takes ortho fallback */
+			/* Day 4 Phase 2: shim sets scr_h>0 for the canonical 3D
+			 * world-projection context, else 0 (HUD/text glyph emit
+			 * → ortho fallback). Pass through; the shader's
+			 * `a_zw.y > 0.5` branch consumes it for perspective-
+			 * correct UV interpolation. */
+			v->scr_h = vd.scr_h;
 			/* Day 3: small Z perturbation from cached real Z; the
 			 * per-split u_pgxp_z_bias uniform dominates so OT order
 			 * is preserved between batches. */
@@ -400,6 +409,20 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 	ApplyVertexPGXP(&vertex[0], p0, ofsX, ofsY, gteidx, -2);
 	ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -1);
 	ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, 0);
+
+#if USE_PGXP
+	/* Day 4 Phase 2: prim-level perspective coherence. The cache-lookup
+	 * hit rate is < 100% — partial-miss prims would put one vertex on
+	 * the perspective branch (gl_Position.w = scr_h, gigantic) and the
+	 * rest on ortho (gl_Position.w = 1, tiny), and the GPU interpolates
+	 * between them through infinity. Demote any partial-hit prim to
+	 * pure ortho. Only all-hit prims keep perspective. */
+	if (vertex[0].scr_h <= 0.0f || vertex[1].scr_h <= 0.0f || vertex[2].scr_h <= 0.0f) {
+		vertex[0].scr_h = 0.0f;
+		vertex[1].scr_h = 0.0f;
+		vertex[2].scr_h = 0.0f;
+	}
+#endif
 
 	RenderCacheProbeVertex(p0);
 	RenderCacheProbeVertex(p1);
@@ -456,6 +479,17 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 	ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -2);
 	ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, -1);
 	ApplyVertexPGXP(&vertex[3], p3, ofsX, ofsY, gteidx, 0);
+
+#if USE_PGXP
+	/* Day 4 Phase 2: prim-level perspective coherence (see MakeVertexTriangle). */
+	if (vertex[0].scr_h <= 0.0f || vertex[1].scr_h <= 0.0f ||
+	    vertex[2].scr_h <= 0.0f || vertex[3].scr_h <= 0.0f) {
+		vertex[0].scr_h = 0.0f;
+		vertex[1].scr_h = 0.0f;
+		vertex[2].scr_h = 0.0f;
+		vertex[3].scr_h = 0.0f;
+	}
+#endif
 
 	RenderCacheProbeVertex(p0);
 	RenderCacheProbeVertex(p1);

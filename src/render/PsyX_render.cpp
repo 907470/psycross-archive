@@ -868,17 +868,21 @@ GLint u_pgxpZBiasLoc;
 #endif
 
 #if USE_PGXP
+/* Day 4 Phase 2: perspective branch uses the NDC-times-w composition.
+ * Ortho `clip = Projection * (px, py, z, 1)` produces (ndc.x, ndc.y, ndc.z, 1).
+ * For perspective-correct UV/attribute interpolation we want gl_Position.w = w
+ * with screen position preserved. Premultiply ortho clip-space xy/z by w and set
+ * gl_Position.w = w; perspective divide on the GPU collapses back to the same NDC
+ * coords (sub-pixel-exact) while attribute interpolation becomes hyperbolic.
+ * The Day 3 per-split bias rides through unchanged because it's applied inside
+ * pgxp_z before Projection. Non-canonical (ofx, ofy) emit sets scr_h = 0 in the
+ * shim and stays on the ortho path, where Day 1c's vertex stability is already
+ * verified. */
 #define GTE_PERSPECTIVE_CORRECTION \
-		"	mat4 ofsMat = mat4(\n"\
-		"		vec4(1.0,  0.0,  0.0,  0.0),\n"\
-		"		vec4(0.0,  1.0,  0.0,  0.0),\n"\
-		"		vec4(0.0,  0.0,  1.0,  0.0),\n"\
-		"		vec4(a_zw.z, -a_zw.w,  0.0,  1.0));\n"\
-		"	vec2 geom_ofs = vec2(0.5, 0.5);\n"\
-		/* Day 3: ortho-path Z = per-split bias (preserves OT order between draw calls) + small intra-draw real-Z perturbation (resolves Z-fighting within a batch). */ \
 		"	float pgxp_z = u_pgxp_z_bias + a_zw.x;\n" \
-		"	vec4 fragPosition = (a_zw.y > 100.0 ? ofsMat * (Projection3D * vec4((a_position.xy + geom_ofs) * vec2(1.0,-1.0) * a_zw.y, a_zw.x, 1.0)) : (Projection * vec4(a_position.xy, pgxp_z, 1.0)));\n" \
-		"	gl_Position = fragPosition;\n"
+		"	vec4 ortho_clip = Projection * vec4(a_position.xy, pgxp_z, 1.0);\n" \
+		"	float w = a_zw.y;\n" \
+		"	gl_Position = (w > 0.5) ? vec4(ortho_clip.xyz * w, w) : ortho_clip;\n"
 #else
 #define GTE_PERSPECTIVE_CORRECTION \
 		"	gl_Position = Projection * vec4(a_position.xy, 0.0, 1.0);\n"
