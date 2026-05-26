@@ -74,6 +74,8 @@ TextureID g_offscreenRTTexture = -1;
 TextureID g_presentColorTexture = -1;
 GLuint g_glPresentFramebuffer = 0;
 GLuint g_glPresentDepthStencilRBO = 0;
+GLuint g_glOffscreenDepthStencilRBO = 0;  /* Day 3 PGXP-Z-buffer mode */
+unsigned int g_pgxp_split_seq = 0;        /* per-frame draw-call counter */
 int g_presentFbWidth = 0;
 int g_presentFbHeight = 0;
 
@@ -435,6 +437,10 @@ void GR_Shutdown()
 	glDeleteFramebuffers(1, &g_glBlitFramebuffer);
 	glDeleteFramebuffers(1, &g_glOffscreenFramebuffer);
 	glDeleteFramebuffers(1, &g_glVRAMFramebuffer);
+	if (g_glOffscreenDepthStencilRBO) {
+		glDeleteRenderbuffers(1, &g_glOffscreenDepthStencilRBO);
+		g_glOffscreenDepthStencilRBO = 0;
+	}
 
 	GR_DestroyPresentFB();
 
@@ -646,6 +652,13 @@ void GR_BeginScene()
 #endif
 	glClear(GL_DEPTH_BUFFER_BIT);
 	glClear(GL_STENCIL_BUFFER_BIT);
+
+	/* Day 3 PGXP-Z-buffer: reset per-frame split counter. DrawSplit
+	 * clears the offscreen FBO's depth on the first split (when seq
+	 * is still 0), at which point the offscreen FBO is already bound
+	 * — that avoids the per-split clear of GR_SetOffscreenState and
+	 * the bind-swap hazard of clearing here. */
+	g_pgxp_split_seq = 0;
 #endif
 
 	GR_UpdateVRAM();
@@ -723,6 +736,7 @@ typedef struct
 	GLint projection3DLoc;
 	GLint bilinearFilterLoc;
 	GLint texelSizeLoc;
+	GLint pgxpZBiasLoc;   /* Day 3 — per-split Z bias for PGXP-Z mode */
 #endif
 } GTEShader;
 
@@ -737,6 +751,7 @@ GLint u_projectionLoc;
 GLint u_projection3DLoc;
 GLint u_bilinearFilterLoc;
 GLint u_texelSizeLoc;
+GLint u_pgxpZBiasLoc;
 
 #define GPU_PACK_RG\
 	"		float color_16 = (color_rg.y * 256.0 + color_rg.x) * 255.0;\n"
@@ -860,7 +875,9 @@ GLint u_texelSizeLoc;
 		"		vec4(0.0,  0.0,  1.0,  0.0),\n"\
 		"		vec4(a_zw.z, -a_zw.w,  0.0,  1.0));\n"\
 		"	vec2 geom_ofs = vec2(0.5, 0.5);\n"\
-		"	vec4 fragPosition = (a_zw.y > 100.0 ? ofsMat * (Projection3D * vec4((a_position.xy + geom_ofs) * vec2(1.0,-1.0) * a_zw.y, a_zw.x, 1.0)) : (Projection * vec4(a_position.xy, 0.5, 1.0)));\n" \
+		/* Day 3: ortho-path Z = per-split bias (preserves OT order between draw calls) + small intra-draw real-Z perturbation (resolves Z-fighting within a batch). */ \
+		"	float pgxp_z = u_pgxp_z_bias + a_zw.x;\n" \
+		"	vec4 fragPosition = (a_zw.y > 100.0 ? ofsMat * (Projection3D * vec4((a_position.xy + geom_ofs) * vec2(1.0,-1.0) * a_zw.y, a_zw.x, 1.0)) : (Projection * vec4(a_position.xy, pgxp_z, 1.0)));\n" \
 		"	gl_Position = fragPosition;\n"
 #else
 #define GTE_PERSPECTIVE_CORRECTION \
@@ -875,6 +892,7 @@ GLint u_texelSizeLoc;
 	"	attribute vec4 a_zw;\n"\
 	"	uniform mat4 Projection;\n"\
 	"	uniform mat4 Projection3D;\n"\
+	"	uniform float u_pgxp_z_bias;\n"\
 	"	const vec2 c_UVFudge = vec2(0.00025, 0.00025);\n"\
 	"	void main() {\n"\
 	"		v_texcoord = a_texcoord;\n"\
@@ -1163,6 +1181,7 @@ void GR_CompilePSXShader(GTEShader* sh, const char* source)
 	sh->texelSizeLoc = glGetUniformLocation(sh->shader, "texelSize");
 #if USE_PGXP
 	sh->projection3DLoc = glGetUniformLocation(sh->shader, "Projection3D");
+	sh->pgxpZBiasLoc = glGetUniformLocation(sh->shader, "u_pgxp_z_bias");
 #endif
 #endif
 }
@@ -1242,8 +1261,13 @@ int GR_InitialisePSX()
 			glBindFramebuffer(GL_FRAMEBUFFER, g_glOffscreenFramebuffer);
 
 			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_offscreenRTTexture, 0);
-			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
-			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+			/* Day 3 PGXP-Z-buffer: depth-stencil RB so depth_test (with
+			 * per-split bias dominating + intra-batch real-Z perturbation
+			 * tiebreaking) works on the offscreen render target. */
+			glGenRenderbuffers(1, &g_glOffscreenDepthStencilRBO);
+			glBindRenderbuffer(GL_RENDERBUFFER, g_glOffscreenDepthStencilRBO);
+			glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, VRAM_WIDTH, VRAM_HEIGHT);
+			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_glOffscreenDepthStencilRBO);
 
 			glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		}
@@ -1475,6 +1499,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_4.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_4.projectionLoc;
 		u_projection3DLoc = g_gte_shader_4.projection3DLoc;
+		u_pgxpZBiasLoc = g_gte_shader_4.pgxpZBiasLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_8_BIT:
@@ -1482,6 +1507,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_8.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_8.projectionLoc;
 		u_projection3DLoc = g_gte_shader_8.projection3DLoc;
+		u_pgxpZBiasLoc = g_gte_shader_8.pgxpZBiasLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_16_BIT:
@@ -1489,6 +1515,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_16.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_16.projectionLoc;
 		u_projection3DLoc = g_gte_shader_16.projection3DLoc;
+		u_pgxpZBiasLoc = g_gte_shader_16.pgxpZBiasLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_32_BIT_RGBA:
@@ -1496,6 +1523,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = -1;
 		u_projectionLoc = g_gte_shader_32_rgba.projectionLoc;
 		u_projection3DLoc = g_gte_shader_32_rgba.projection3DLoc;
+		u_pgxpZBiasLoc = g_gte_shader_32_rgba.pgxpZBiasLoc;
 		u_texelSizeLoc = g_gte_shader_32_rgba.texelSizeLoc;
 		break;
 	}

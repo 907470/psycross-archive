@@ -361,11 +361,17 @@ inline void ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, us
 			v->x = vd.px + ofsX;
 			v->y = vd.py + ofsY;
 			v->scr_h = 0.0f;   /* shader takes ortho fallback */
-			v->z = 0.0f;
+			/* Day 3: small Z perturbation from cached real Z; the
+			 * per-split u_pgxp_z_bias uniform dominates so OT order
+			 * is preserved between batches. */
+			v->z = vd.pz;
 			return;
 		}
 	}
 
+	/* Cache miss: zero perturbation. v->z = 0 means this vertex's
+	 * Z = u_pgxp_z_bias (its batch's slot center), which sorts
+	 * correctly between batches by draw order. */
 	v->scr_h = 0.0f;
 	v->z = 0.0f;
 #endif
@@ -941,6 +947,9 @@ static void AddSplit(bool semiTrans, bool textured)
 	split.numVerts = 0;
 }
 
+extern unsigned int g_pgxp_split_seq;
+extern GLint u_pgxpZBiasLoc;
+
 void DrawSplit(const GPUDrawSplit& split)
 {
 	if(split.debugText)
@@ -958,6 +967,30 @@ void DrawSplit(const GPUDrawSplit& split)
 	GR_SetOffscreenState(&split.drawenv.clip, !drawOnScreen);
 
 	GR_SetBlendMode(split.blendMode);
+
+	/* Day 3 PGXP-Z-buffer: on the first split of each frame, the
+	 * offscreen FBO is now bound (via GR_SetOffscreenState above),
+	 * so it's safe to clear depth here without bind-swap hazards. */
+	if (g_pgxp_split_seq == 0) {
+		glClearDepth(1.0f);
+		glClear(GL_DEPTH_BUFFER_BIT);
+	}
+
+	/* Per-split Z bias for PGXP-Z mode. Spyro draws OT back-to-front,
+	 * so later splits (higher seq) should win LEQUAL. GR_Ortho2D
+	 * INVERTS Z in its projection matrix (ortho_matrix[10] = -1 for
+	 * znear=-1/zfar=+1), so pre-projection z=+1 maps to NDC z=-1
+	 * (near plane), and pre-projection z=-1 maps to NDC z=+1 (far).
+	 * Therefore later splits need LARGER pre-projection z. Range
+	 * [-0.95, +0.95]; per-split slot ≈ 2/MAX_DRAW_SPLITS ≈ 0.0005;
+	 * intra-batch perturbation is 0 (preserves OT/triangle order
+	 * within a draw call — see openpete-pgxp.md Day 3). */
+	if (u_pgxpZBiasLoc >= 0) {
+		const float kMax = (float)MAX_DRAW_SPLITS;
+		const float bias = ((float)g_pgxp_split_seq / kMax) * 1.9f - 0.95f;
+		glUniform1f(u_pgxpZBiasLoc, bias);
+	}
+	g_pgxp_split_seq++;
 
 	GR_DrawTriangles(split.startVertex, split.numVerts / 3);
 
