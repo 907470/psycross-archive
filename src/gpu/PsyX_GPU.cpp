@@ -109,6 +109,13 @@ inline void ScreenCoordsToEmulator(GrVertex* vertex, int count)
 
 	while (count--)
 	{
+		/* Skip verts that were already resolved by ApplyVertexPGXP via the
+		 * renderer-foundation cache — those have x/y in MAC/128 pre-projection
+		 * space (consumed directly by the perspective shader branch), not
+		 * raw PSX pixel coords. The fallback (cache-miss) path leaves
+		 * scr_h = 0, which gates the shader's `a_zw.y > 100.0` check onto
+		 * the orthographic branch — and is the same sentinel we use here. */
+		if (vertex[count].scr_h > 0.0f) continue;
 		vertex[count].x = vertex[count].x / w - 0.5f;
 		vertex[count].y = vertex[count].y / h - 0.5f;
 	}
@@ -191,6 +198,16 @@ void MakeLineArray(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, ushort gteidx)
 extern "C" {
     extern int g_openpete_render_probe_active;
     int  openpete_render_cache_lookup_curr_raw(uint32_t sxy_key);
+    /* PGXP shim — see openpete_render_cache.h and openpete-pgxp.md.
+     * Forward-decl avoids dragging the full openpete_render_cache.h
+     * (and its iterator API) through the PsyX include surface. */
+    typedef struct openpete_pgxp_lookup {
+        float px, py, pz;
+        float ofx, ofy;
+        float scr_h;
+    } openpete_pgxp_lookup_t;
+    int  openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
+                                           openpete_pgxp_lookup_t* out);
     void openpete_render_matcher_observe_tri(const int16_t* p0,
                                              const int16_t* p1,
                                              const int16_t* p2);
@@ -309,33 +326,48 @@ static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
 inline void ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, ushort gteidx, int lookupOfs)
 {
 #if USE_PGXP
-	uint lookup = PGXP_LOOKUP_VALUE(p[0], p[1]);
+	/* openpete: PGXP precision sourced from the renderer-foundation
+	 * world-space cache (populated by psxrecomp's gte_execute). The
+	 * cache shim float-projects SXY directly in PSX pixel space; the
+	 * int16-derived v->x/y get overwritten with sub-pixel-precision
+	 * floats in the same coord space. We leave scr_h = 0 so the
+	 * shader takes its ortho fallback branch — mathematically
+	 * identical to the integer route, just with float precision
+	 * preserved end-to-end.
+	 *
+	 * The upstream PsyCross PGXP perspective shader branch is left
+	 * un-engaged for now (it expects a different coord-space + scale
+	 * relationship between px/scr_h that was tuned for a non-Spyro
+	 * game — see openpete-pgxp.md Day 1b). PGXP-Z-buffer mode and
+	 * texture correction will require re-engaging that branch with
+	 * calibration work; out of scope for this pass.
+	 *
+	 * gteidx / lookupOfs are vestigial under the SXY-keyed lookup. */
+	(void)gteidx; (void)lookupOfs;
 
-	PGXPVData vd;
-	if (gteidx != 0xffff &&
-		g_cfg_pgxpTextureCorrection &&
-		PGXP_GetCacheData(&vd, lookup, gteidx + lookupOfs))
+	if (g_cfg_pgxpTextureCorrection)
 	{
-		v->x = vd.px;
-		v->y = vd.py;
-		v->z = vd.pz;
+		const uint32_t sxy_key =
+			((uint32_t)(uint16_t)(int16_t)p[0]) |
+			(((uint32_t)(uint16_t)(int16_t)p[1]) << 16);
 
-		// calculate offset for our perspective matrix based on supposed GTE transformed geometry offset
-		float dispW, dispH;
-		DrawEnvDimensions(dispW, dispH);
-
-		const float gteOfsX = fmodf(vd.ofx, dispW) - dispW * 0.5f;
-		const float gteOfsY = fmodf(vd.ofy, dispH) - dispH * 0.5f;
-
-		v->ofsX = (ofsX + gteOfsX) / dispW * 2.0f;
-		v->ofsY = (ofsY + gteOfsY) / dispH * 2.0f;
-		v->scr_h = vd.scr_h;
+		openpete_pgxp_lookup_t vd;
+		if (openpete_render_cache_lookup_pgxp(sxy_key, &vd))
+		{
+			/* vd.px/py are already in PSX pixel space — same coord
+			 * space the int16 path produced via `p[i] + ofsX`. The
+			 * int16 v->x/y assignment in the caller is overwritten
+			 * with the float-precision projection. */
+			v->x = vd.px + ofsX;
+			v->y = vd.py + ofsY;
+			v->scr_h = 0.0f;   /* shader takes ortho fallback */
+			v->z = 0.0f;
+			return;
+		}
 	}
-	else
-	{
-		v->scr_h = 0.0f;
-		v->z = 0.0f;
-	}
+
+	v->scr_h = 0.0f;
+	v->z = 0.0f;
 #endif
 }
 
