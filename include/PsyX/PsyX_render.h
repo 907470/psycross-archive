@@ -14,7 +14,11 @@
 #   define OGLES_VERSION (3)
 #elif defined(__EMSCRIPTEN__)
 #   define RENDERER_OGLES
-#   define OGLES_VERSION (2)
+/* WebGL2 (GLES3). Universally supported in modern browsers and the path
+ * PsyCross's render code was written around — PBO uploads, offscreen blit,
+ * and glBlitFramebuffer present scaling are all GLES3-gated. Pair with
+ * -sMAX_WEBGL_VERSION=2 / -sFULL_ES3=1 at link (see games/spyro-1). */
+#   define OGLES_VERSION (3)
 #elif defined(__ANDROID__)
 #   define RENDERER_OGLES
 #   define OGLES_VERSION (3)

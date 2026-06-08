@@ -338,6 +338,25 @@ typedef struct _RECT16 {
 
 #define P_LEN		3		// 3 longs
 
+#elif defined(__EMSCRIPTEN__)
+
+/* wasm32: uintptr_t is 4 bytes, which would give an 8-byte / 2-long tag
+ * header (the #else branch below). But openpete's DrawOTag bridge in
+ * games/spyro-1/psyq_thunks.cpp — and the whole render/matcher/interp
+ * path that was authored and validated on the amd64 build — assume the
+ * 12-byte / 3-long header. Pad the pointer region to 8 bytes so the
+ * Emscripten layout is byte-identical to amd64 (P_LEN == 3); setaddr /
+ * nextPrim still use the low 4 bytes (the real wasm pointer), the pad is
+ * never read. Without this the walker reads primitive fields at the
+ * wrong offsets → garbage tags → GR_CopyVRAM out-of-bounds on frame 1. */
+#define DECLARE_P_ADDR \
+		uintptr_t addr; \
+		uint _addr_pad; \
+		uint len : 16; \
+		uint pgxp_index : 16;
+
+#define P_LEN		3		// 3 longs (padded to match amd64)
+
 #else
 
 #define DECLARE_P_ADDR \

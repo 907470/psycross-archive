@@ -44,6 +44,18 @@ extern "C" {
 
 #endif
 
+/* Internalformat for FBO color-attachment textures (present / blit /
+ * offscreen render targets). Desktop GL accepts the unsized GL_RGBA as a
+ * color-renderable attachment, but GLES3 / WebGL2 require a SIZED format —
+ * an unsized GL_RGBA texture is not color-renderable, so glBlitFramebuffer
+ * reports "Framebuffer is incomplete: Attachment is not renderable" and
+ * nothing reaches the screen. GL_RGBA8 is valid on both. */
+#if defined(RENDERER_OGLES)
+#	define PSYX_RT_COLOR_INTERNALFORMAT GL_RGBA8
+#else
+#	define PSYX_RT_COLOR_INTERNALFORMAT GL_RGBA
+#endif
+
 extern SDL_Window* g_window;
 
 
@@ -498,7 +510,7 @@ static void GR_EnsurePresentFB(int w, int h)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexImage2D(GL_TEXTURE_2D, 0, PSYX_RT_COLOR_INTERNALFORMAT, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 	glBindTexture(GL_TEXTURE_2D, 0);
 	g_presentColorTexture = (TextureID)colorTex;
 
@@ -1224,7 +1236,7 @@ int GR_InitialisePSX()
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
 			// default to VRAM size
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, VRAM_WIDTH, VRAM_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+			glTexImage2D(GL_TEXTURE_2D, 0, PSYX_RT_COLOR_INTERNALFORMAT, VRAM_WIDTH, VRAM_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
 			glBindTexture(GL_TEXTURE_2D, 0);
 		}
@@ -1255,7 +1267,7 @@ int GR_InitialisePSX()
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
 			// default to VRAM size
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, VRAM_WIDTH, VRAM_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+			glTexImage2D(GL_TEXTURE_2D, 0, PSYX_RT_COLOR_INTERNALFORMAT, VRAM_WIDTH, VRAM_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
 			glBindTexture(GL_TEXTURE_2D, 0);
 		}
@@ -1801,7 +1813,7 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 			g_PreviousOffscreen.h != offscreenRect->h)
 		{
 			glBindTexture(GL_TEXTURE_2D, g_offscreenRTTexture);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, offscreenRect->w, offscreenRect->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+			glTexImage2D(GL_TEXTURE_2D, 0, PSYX_RT_COLOR_INTERNALFORMAT, offscreenRect->w, offscreenRect->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 			glBindTexture(GL_TEXTURE_2D, 0);
 		}
 
@@ -1873,7 +1885,7 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
 		g_PreviousFramebuffer.h != h)
 	{
 		glBindTexture(GL_TEXTURE_2D, g_fbTexture);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glTexImage2D(GL_TEXTURE_2D, 0, PSYX_RT_COLOR_INTERNALFORMAT, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 		glBindTexture(GL_TEXTURE_2D, 0);
 	}
 

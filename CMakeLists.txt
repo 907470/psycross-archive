@@ -51,3 +51,11 @@ target_link_libraries(psycross_static SDL3::SDL3-static)
 find_package(OpenAL REQUIRED)
 target_link_libraries(psycross_static ${OPENAL_LIBRARY})
 target_include_directories(psycross_static PRIVATE ${OPENAL_INCLUDE_DIR})
+
+# Emscripten compiles with clang, which (unlike the GCC native build)
+# treats braced-init narrowing as a hard error rather than a warning —
+# e.g. the generated 16-bit tables in gte/half_float.cpp + rcossin_tbl.h.
+# The values fit; demote it back to a warning for the whole vendored lib.
+if(EMSCRIPTEN)
+    target_compile_options(psycross_static PRIVATE -Wno-c++11-narrowing)
+endif()
