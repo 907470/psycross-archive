@@ -700,16 +700,23 @@ void PsyX_Exit();
 int g_activeKeyboardControllers = 0x1;
 int g_altKeyState = 0;
 
-/* Toggle between windowed and borderless-fullscreen-desktop. In SDL3,
- * SDL_SetWindowFullscreen(window, true) with no exclusive display mode set
- * (the default) is borderless fullscreen desktop — it fills the display at
- * its current desktop mode rather than switching video modes. Bound to both
- * Alt+Enter and a double-click anywhere in the window. */
+/* Toggle between windowed and *borderless* fullscreen desktop. Bound to both
+ * Alt+Enter and a double-click anywhere in the window.
+ *
+ * In SDL3 the kind of fullscreen is decided by the window's fullscreen *mode*:
+ * a non-NULL mode → exclusive (video-mode switch); NULL → borderless desktop
+ * (fills the display at its current desktop mode). We always want borderless,
+ * so force the mode to NULL before entering fullscreen rather than relying on
+ * the backend default (which can resolve to an exclusive mode). */
 static void PsyX_Sys_ToggleFullscreen()
 {
 	bool fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
 
+	if (!fullscreen)
+		SDL_SetWindowFullscreenMode(g_window, NULL);  /* borderless desktop */
+
 	SDL_SetWindowFullscreen(g_window, !fullscreen);
+	SDL_SyncWindow(g_window);  /* settle the size change before we read it back */
 
 	SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
 	GR_ResetDevice();
