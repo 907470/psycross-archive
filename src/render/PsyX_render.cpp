@@ -498,6 +498,37 @@ static void GR_EnsurePresentFB(int w, int h)
 {
 	if (w <= 0 || h <= 0)
 		return;
+
+	/* Clamp the FBO dimensions to the GL limits. The present FBO width is
+	 * derived from the window height times the content aspect, so an
+	 * extreme aspect (e.g. 512:9 -> factor ~42.7) asks for a >60k-px-wide
+	 * texture. glTexImage2D / glRenderbufferStorage past GL_MAX_TEXTURE_SIZE
+	 * fail (GL_INVALID_VALUE), leaving an incomplete FBO that the next
+	 * blit/swap hangs on (observed under the WSL2 D3D12->GL layer). Clamping
+	 * just reduces horizontal pixel density at absurd aspects — the
+	 * present-blit already scales the FBO onto the window. Query once. */
+	{
+		static int s_max_dim = 0;
+		if (s_max_dim == 0) {
+			GLint maxTex = 0, maxRb = 0;
+			glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+			glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &maxRb);
+			s_max_dim = (maxTex < maxRb || maxRb == 0) ? maxTex : maxRb;
+			if (s_max_dim <= 0) s_max_dim = 8192;  /* conservative fallback */
+		}
+		if (w > s_max_dim || h > s_max_dim) {
+			static int s_warned = 0;
+			if (!s_warned) {
+				s_warned = 1;
+				fprintf(stderr, "[PsyX] present FBO %dx%d exceeds GL max %d; "
+						"clamping (extreme aspect — horizontal detail reduced)\n",
+						w, h, s_max_dim);
+			}
+			if (w > s_max_dim) w = s_max_dim;
+			if (h > s_max_dim) h = s_max_dim;
+		}
+	}
+
 	if (g_glPresentFramebuffer && g_presentFbWidth == w && g_presentFbHeight == h)
 		return;
 
