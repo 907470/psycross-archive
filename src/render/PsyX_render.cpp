@@ -592,11 +592,19 @@ static int GR_PresentFBWidthForHeight(int fb_h)
 	return fb_w;
 }
 
-extern "C" void GR_PresentCroppedToWindow()
+/* Compute the present-FBO source crop rect — the canonical PSX visible
+ * region per DRAWENV.clip — in bottom-origin FBO pixels. Returns 0 (and
+ * leaves outputs untouched) when there is no present FBO. Shared by the
+ * cropped window present and the native-resolution screenshot reader so
+ * both agree exactly on which FBO pixels constitute "the rendered scene":
+ *   top edge    = fb_h - dy * fb_h/disp_h
+ *   bottom edge = fb_h - (dy + clip_h) * fb_h/disp_h
+ * For Spyro+window=448: fb_h=480, src_y=[16, 464], width 448 → 1:1. */
+static int GR_GetPresentSceneCrop(int* out_x, int* out_y, int* out_w, int* out_h)
 {
 #if USE_OPENGL
 	if (!g_glPresentFramebuffer)
-		return;
+		return 0;
 
 	int disp_h = activeDispEnv.disp.h;
 	int clip_h = activeDrawEnv.clip.h;
@@ -605,13 +613,6 @@ extern "C" void GR_PresentCroppedToWindow()
 	if (clip_h <= 0 || clip_h > disp_h) clip_h = disp_h;
 	if (dy < 0) dy = 0;
 
-	/* Crop to the scissor rect — the canonical PSX visible region per
-	 * DRAWENV.clip. PsyCross renders the full scissor area (geometry fills
-	 * the entire scissored region empirically), so source = scissor in
-	 * disp-relative ortho coords. In FBO bottom-origin pixels:
-	 *   top edge    = fb_h - dy * fb_h/disp_h
-	 *   bottom edge = fb_h - (dy + clip_h) * fb_h/disp_h
-	 * For Spyro+window=448: fb_h=480, src_y=[16, 464], width 448 → 1:1. */
 	int top_disp_y = dy;
 	int bot_disp_y = dy + clip_h;
 	if (bot_disp_y > disp_h) bot_disp_y = disp_h;
@@ -619,6 +620,62 @@ extern "C" void GR_PresentCroppedToWindow()
 	int src_y_top    = g_presentFbHeight - (bot_disp_y * g_presentFbHeight + disp_h / 2) / disp_h;
 	if (src_y_top < 0) src_y_top = 0;
 	if (src_y_bottom > g_presentFbHeight) src_y_bottom = g_presentFbHeight;
+
+	if (out_x) *out_x = 0;
+	if (out_y) *out_y = src_y_top;
+	if (out_w) *out_w = g_presentFbWidth;
+	if (out_h) *out_h = src_y_bottom - src_y_top;
+	return 1;
+#else
+	(void)out_x; (void)out_y; (void)out_w; (void)out_h;
+	return 0;
+#endif
+}
+
+/* Native-resolution screenshot helpers. Read straight from the present FBO
+ * (where the scene is rendered) rather than the window backbuffer, so the
+ * saved image is the rendered scene at internal resolution with no
+ * letter/pillarbox bars regardless of how the window is sized. */
+extern "C" int GR_GetPresentSceneSize(int* out_w, int* out_h)
+{
+	int x, y, w, h;
+	if (!GR_GetPresentSceneCrop(&x, &y, &w, &h) || w <= 0 || h <= 0)
+		return 0;
+	if (out_w) *out_w = w;
+	if (out_h) *out_h = h;
+	return 1;
+}
+
+extern "C" int GR_ReadPresentSceneRGBA(unsigned char* pixels, int w, int h, unsigned int gl_format)
+{
+#if USE_OPENGL
+	int x, y, cw, ch;
+	if (!pixels || !GR_GetPresentSceneCrop(&x, &y, &cw, &ch) || cw != w || ch != h || w <= 0 || h <= 0)
+		return 0;
+	/* The scene leaves GL_SCISSOR_TEST enabled with a rect sized for the
+	 * FBO; glReadPixels ignores scissor, but disable it defensively to keep
+	 * the read independent of prior draw state, then restore. Rows come back
+	 * bottom-up (GL origin bottom-left) — the caller flips. */
+	GLboolean prev_scissor = glIsEnabled(GL_SCISSOR_TEST);
+	if (prev_scissor) glDisable(GL_SCISSOR_TEST);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, g_glPresentFramebuffer);
+	glReadPixels(x, y, w, h, (GLenum)gl_format, GL_UNSIGNED_BYTE, pixels);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	if (prev_scissor) glEnable(GL_SCISSOR_TEST);
+	return 1;
+#else
+	(void)pixels; (void)w; (void)h; (void)gl_format;
+	return 0;
+#endif
+}
+
+extern "C" void GR_PresentCroppedToWindow()
+{
+#if USE_OPENGL
+	int src_y_top, src_w, src_crop_h;
+	if (!GR_GetPresentSceneCrop(NULL, &src_y_top, &src_w, &src_crop_h))
+		return;
+	int src_y_bottom = src_y_top + src_crop_h;
 
 	/* glBlitFramebuffer respects GL_SCISSOR_TEST, and the scene leaves
 	 * scissor enabled with rect sized for the present FBO. On the (shorter)
@@ -632,7 +689,6 @@ extern "C" void GR_PresentCroppedToWindow()
 	 * the dst rect to fit while matching src aspect, centre, and clear the
 	 * surrounding area to black so resizing the window letter/pillarboxes
 	 * instead of stretching. */
-	const int src_w = g_presentFbWidth;
 	const int src_h = src_y_bottom - src_y_top;
 	int dst_w = g_windowWidth;
 	int dst_h = g_windowHeight;

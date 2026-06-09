@@ -192,6 +192,17 @@ extern void			GR_ReadVRAM(unsigned short* dst, int x, int y, int dst_w, int dst_
 
 extern void			GR_StoreFrameBuffer(int x, int y, int w, int h);
 extern void			GR_PresentCroppedToWindow();
+
+// Native-resolution screenshot: read the rendered scene straight from the
+// present FBO (internal resolution, cropped to the canonical PSX visible
+// region) with no letter/pillarbox bars. GR_GetPresentSceneSize reports the
+// cropped dimensions; GR_ReadPresentSceneRGBA fills a caller-allocated
+// w*h*4 buffer in the given GL pixel format (GL_RGBA / GL_BGRA). Both return
+// 0 when there is no present FBO (e.g. the no-FBO/headless path). Pixel rows
+// are bottom-up (GL origin); the caller flips vertically.
+extern int			GR_GetPresentSceneSize(int* out_w, int* out_h);
+extern int			GR_ReadPresentSceneRGBA(unsigned char* pixels, int w, int h, unsigned int gl_format);
+
 extern void			GR_UpdateVRAM();
 extern void			GR_ReadFramebufferDataToVRAM();
 
