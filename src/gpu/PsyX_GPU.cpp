@@ -229,6 +229,11 @@ extern "C" {
     openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
         const int16_t* p, float alpha, int pgxp_base);
     int openpete_render_matcher_is_smoothed(const int16_t* p);
+    /* Overlay v2 state classifier — values mirror the OPENPETE_DBGST_*
+     * enum in openpete_render_matcher.h (0 none, 1 tag-absent,
+     * 2 tag-insane, 3 corr-frozen, 4 heur-paired, 5 legacy-world,
+     * 6 vert-miss). */
+    int openpete_render_matcher_debug_state(const int16_t* p);
     extern int g_openpete_dbg_highlight_smoothed;
     int64_t op_now(void);
     float   openpete_render_compute_alpha(int64_t now_ns);
@@ -266,19 +271,24 @@ static inline float openpete_get_lerp_alpha() {
  * MakeVertex* sets s_dbg_prim_red from the matcher predicate; the
  * Colour stage (always last → overrides stick) consumes it, forcing
  * red and zeroing page/uv so the GL path renders flat untextured. */
-/* Two-state overlay:
- *   RED  = prim is in a paired/eligible batch (it COULD interpolate —
- *          has a per-vertex correspondence) but got no visible motion
- *          THIS render (alpha≈0, or it didn't actually move).
- *   BLUE = prim was ACTUALLY interpolated this render — at least one
- *          vertex received a >=1 px applied delta.
- * Blue takes precedence (the stronger "frame-gen is doing work" signal).
- * Watching at high --render-fps: lots of red + little blue ⇒
- * interpolation is eligible but contributing no visible sub-frame
- * motion (explains a "still looks 30 fps" feel); blue everywhere ⇒
- * frame-gen IS displacing geometry. */
-static bool s_dbg_prim_red  = false;
-static bool s_dbg_prim_blue = false;
+/* Overlay v2 (§12.2) — state-colored: every snap/fallback cause has
+ * its own hue, so an on-screen artifact names its mechanism on sight:
+ *   GREEN   healthy — prim actually interpolated this render
+ *           (>=1 px applied delta on some vertex)
+ *   RED     tag-absent freeze (despawned moby / strip culled out)
+ *   YELLOW  tagged_pair_sane reject (world count-shift / moby
+ *           teleport-shape guard) — frozen this frame
+ *   ORANGE  corr-gate whole-batch freeze (animating mesh / partial
+ *           strip correspondence)
+ *   MAGENTA centroid-hash heuristic pairing (untagged renderers only:
+ *           particles / flames / shadows — §12.1 deletion targets)
+ *   BLUE    legacy obj_tag==0 world (§7.3 composite-reproject path)
+ *   CYAN    batch paired but vertex tomap-missed (animated v_local
+ *           churn / culled-in vert) — vertex frozen
+ * Problem states win over green; the numerically highest state across
+ * the prim's verts is shown. Uncolored = static or UI. */
+static int  s_dbg_prim_state = 0;
+static bool s_dbg_prim_moved = false;
 static inline bool openpete_dbg_hl_on() {
 	/* Live global (CLI/env-seeded in run.c, F9-toggled). Not a
 	 * getenv() — bare env vars don't cross the WSL2→Win32 boundary
@@ -287,36 +297,46 @@ static inline bool openpete_dbg_hl_on() {
 }
 static inline void openpete_dbg_mark_prim(const VERTTYPE* a, const VERTTYPE* b,
                                           const VERTTYPE* c, const VERTTYPE* d) {
-	/* Do NOT reset s_dbg_prim_blue here: mark_prim runs AFTER the
-	 * substitute block (note_applied already set blue for this prim).
+	/* Do NOT reset s_dbg_prim_moved here: mark_prim runs AFTER the
+	 * substitute block (note_applied already set it for this prim).
 	 * apply_color resets both when it consumes them, so no stale carry. */
-	s_dbg_prim_red = false;
+	s_dbg_prim_state = 0;
 	if (!openpete_dbg_hl_on()) return;
-	if (openpete_render_matcher_is_smoothed(a) ||
-	    openpete_render_matcher_is_smoothed(b) ||
-	    openpete_render_matcher_is_smoothed(c) ||
-	    (d && openpete_render_matcher_is_smoothed(d)))
-		s_dbg_prim_red = true;
+	int st = openpete_render_matcher_debug_state(a);
+	int t;
+	t = openpete_render_matcher_debug_state(b); if (t > st) st = t;
+	t = openpete_render_matcher_debug_state(c); if (t > st) st = t;
+	if (d) { t = openpete_render_matcher_debug_state(d); if (t > st) st = t; }
+	s_dbg_prim_state = st;
 }
 /* Called from the substitute apply block with the just-computed
- * per-vertex deltas; flags the prim blue if any vertex visibly moved. */
+ * per-vertex deltas; flags the prim as actually-moved (green). */
 static inline void openpete_dbg_note_applied(float adx, float ady) {
 	if (!openpete_dbg_hl_on()) return;
 	if (adx < 0) adx = -adx;
 	if (ady < 0) ady = -ady;
-	if (adx + ady >= 1.0f) s_dbg_prim_blue = true;
+	if (adx + ady >= 1.0f) s_dbg_prim_moved = true;
 }
-/* Consumed by every MakeColour* path. Returns true if it recoloured.
- * Blue (actually moved) wins over red (eligible only). */
+/* Consumed by every MakeColour* path. Returns true if it recoloured. */
 static inline bool openpete_dbg_apply_color(GrVertex* v, int n) {
-	const bool blue = s_dbg_prim_blue, red = s_dbg_prim_red;
-	s_dbg_prim_blue = false;
-	s_dbg_prim_red  = false;
-	if (!blue && !red) return false;
-	const unsigned char R = blue ? 0   : 255;
-	const unsigned char B = blue ? 255 : 0;
+	const int  st    = s_dbg_prim_state;
+	const bool moved = s_dbg_prim_moved;
+	s_dbg_prim_state = 0;
+	s_dbg_prim_moved = false;
+	if (st == 0 && !moved) return false;
+	/* Index = OPENPETE_DBGST_* value; slot 0 = healthy-moved green. */
+	static const unsigned char k_rgb[7][3] = {
+		{   0, 200,   0 },  /* 0 moved        green   */
+		{ 255,   0,   0 },  /* 1 tag-absent   red     */
+		{ 255, 255,   0 },  /* 2 tag-insane   yellow  */
+		{ 255, 128,   0 },  /* 3 corr-frozen  orange  */
+		{ 255,   0, 255 },  /* 4 heur-paired  magenta */
+		{   0,  64, 255 },  /* 5 legacy-world blue    */
+		{   0, 255, 255 },  /* 6 vert-miss    cyan    */
+	};
+	const unsigned char* rgb = k_rgb[(st > 0 && st <= 6) ? st : 0];
 	for (int i = 0; i < n; ++i) {
-		v[i].r = R; v[i].g = 0; v[i].b = B; v[i].a = 255;
+		v[i].r = rgb[0]; v[i].g = rgb[1]; v[i].b = rgb[2]; v[i].a = 255;
 		v[i].bright = 1;            /* flat, no 2x texture-modulate */
 		v[i].page = 0;              /* page 0 = untextured path     */
 		v[i].clut = 0;
