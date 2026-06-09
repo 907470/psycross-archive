@@ -336,12 +336,15 @@ static inline bool openpete_dbg_apply_color(GrVertex* v, int n) {
 	};
 	const unsigned char* rgb = k_rgb[(st > 0 && st <= 6) ? st : 0];
 	for (int i = 0; i < n; ++i) {
+		/* TINT, don't repaint: keep page/clut/uv so the prim renders
+		 * through its normal (textured or not) path with the state
+		 * color modulated in. The v1 overlay forced page=0/uv=0 to go
+		 * flat-untextured, but that path isn't honored by every
+		 * split — Spyro's prims sampled texel (0,0) of their still-
+		 * bound page and alpha-tested away entirely ("Spyro is
+		 * totally invisible with F9"). Tinting can never lose
+		 * geometry; dark textures just show a darker hue. */
 		v[i].r = rgb[0]; v[i].g = rgb[1]; v[i].b = rgb[2]; v[i].a = 255;
-		v[i].bright = 1;            /* flat, no 2x texture-modulate */
-		v[i].page = 0;              /* page 0 = untextured path     */
-		v[i].clut = 0;
-		v[i].u = v[i].v = 0;
-		v[i].tcx = v[i].tcy = 0;
 	}
 	return true;
 }
