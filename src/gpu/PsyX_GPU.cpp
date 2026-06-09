@@ -222,6 +222,12 @@ extern "C" {
     typedef struct { float dx; float dy; } openpete_substitute_delta_t;
     openpete_substitute_delta_t openpete_render_matcher_substitute_query(
         const int16_t* p, float alpha);
+    /* PGXP-aware variant: pgxp_base=1 ⇒ this vertex's GL base was
+     * float-positioned by ApplyVertexPGXP, so the matcher returns a
+     * float-endpoint delta (sub-pixel consistent) instead of an
+     * int16-endpoint one. See openpete_render_matcher.h. */
+    openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
+        const int16_t* p, float alpha, int pgxp_base);
     int openpete_render_matcher_is_smoothed(const int16_t* p);
     extern int g_openpete_dbg_highlight_smoothed;
     int64_t op_now(void);
@@ -327,7 +333,11 @@ static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
     (void)openpete_render_cache_lookup_curr_raw(key);
 }
 
-inline void ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, ushort gteidx, int lookupOfs)
+/* Returns 1 iff the vertex position was replaced with the cache's
+ * float sub-pixel projection — the caller passes this into the
+ * substitute query so interp deltas stay in the same (float vs int16)
+ * coordinate model as the base they're added to. */
+inline int ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, ushort gteidx, int lookupOfs)
 {
 #if USE_PGXP
 	/* openpete: PGXP precision sourced from the renderer-foundation
@@ -374,7 +384,7 @@ inline void ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, us
 			 * per-split u_pgxp_z_bias uniform dominates so OT order
 			 * is preserved between batches. */
 			v->z = vd.pz;
-			return;
+			return 1;
 		}
 	}
 
@@ -384,6 +394,7 @@ inline void ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, us
 	v->scr_h = 0.0f;
 	v->z = 0.0f;
 #endif
+	return 0;
 }
 
 void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, ushort gteidx)
@@ -406,9 +417,9 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 	vertex[2].x = p2[0] + ofsX;
 	vertex[2].y = p2[1] + ofsY;
 
-	ApplyVertexPGXP(&vertex[0], p0, ofsX, ofsY, gteidx, -2);
-	ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -1);
-	ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, 0);
+	const int pg0 = ApplyVertexPGXP(&vertex[0], p0, ofsX, ofsY, gteidx, -2);
+	const int pg1 = ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -1);
+	const int pg2 = ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, 0);
 
 #if USE_PGXP
 	/* Day 4 Phase 2: prim-level perspective coherence. The cache-lookup
@@ -435,9 +446,9 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 	{
 		const float a = openpete_get_lerp_alpha();
 		if (a > 0.0f) {
-			openpete_substitute_delta_t d0 = openpete_render_matcher_substitute_query(p0, a);
-			openpete_substitute_delta_t d1 = openpete_render_matcher_substitute_query(p1, a);
-			openpete_substitute_delta_t d2 = openpete_render_matcher_substitute_query(p2, a);
+			openpete_substitute_delta_t d0 = openpete_render_matcher_substitute_query_px(p0, a, pg0);
+			openpete_substitute_delta_t d1 = openpete_render_matcher_substitute_query_px(p1, a, pg1);
+			openpete_substitute_delta_t d2 = openpete_render_matcher_substitute_query_px(p2, a, pg2);
 			vertex[0].x += d0.dx; vertex[0].y += d0.dy;
 			vertex[1].x += d1.dx; vertex[1].y += d1.dy;
 			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
@@ -475,10 +486,10 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 	vertex[3].x = p3[0] + ofsX;
 	vertex[3].y = p3[1] + ofsY;
 
-	ApplyVertexPGXP(&vertex[0], p0, ofsX, ofsY, gteidx, -3);
-	ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -2);
-	ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, -1);
-	ApplyVertexPGXP(&vertex[3], p3, ofsX, ofsY, gteidx, 0);
+	const int pg0 = ApplyVertexPGXP(&vertex[0], p0, ofsX, ofsY, gteidx, -3);
+	const int pg1 = ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -2);
+	const int pg2 = ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, -1);
+	const int pg3 = ApplyVertexPGXP(&vertex[3], p3, ofsX, ofsY, gteidx, 0);
 
 #if USE_PGXP
 	/* Day 4 Phase 2: prim-level perspective coherence (see MakeVertexTriangle). */
@@ -501,10 +512,10 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 	{
 		const float a = openpete_get_lerp_alpha();
 		if (a > 0.0f) {
-			openpete_substitute_delta_t d0 = openpete_render_matcher_substitute_query(p0, a);
-			openpete_substitute_delta_t d1 = openpete_render_matcher_substitute_query(p1, a);
-			openpete_substitute_delta_t d2 = openpete_render_matcher_substitute_query(p2, a);
-			openpete_substitute_delta_t d3 = openpete_render_matcher_substitute_query(p3, a);
+			openpete_substitute_delta_t d0 = openpete_render_matcher_substitute_query_px(p0, a, pg0);
+			openpete_substitute_delta_t d1 = openpete_render_matcher_substitute_query_px(p1, a, pg1);
+			openpete_substitute_delta_t d2 = openpete_render_matcher_substitute_query_px(p2, a, pg2);
+			openpete_substitute_delta_t d3 = openpete_render_matcher_substitute_query_px(p3, a, pg3);
 			vertex[0].x += d0.dx; vertex[0].y += d0.dy;
 			vertex[1].x += d1.dx; vertex[1].y += d1.dy;
 			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
