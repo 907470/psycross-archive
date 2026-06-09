@@ -719,6 +719,22 @@ static void PsyX_Sys_ToggleFullscreen()
 	SDL_SyncWindow(g_window);  /* settle the size change before we read it back */
 
 	SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
+
+	/* Ground truth for diagnosing "is this exclusive?": a non-NULL window
+	 * fullscreen mode is the ONLY way SDL3 video-mode-switches. */
+	if (!fullscreen)
+	{
+		const SDL_DisplayMode* m = SDL_GetWindowFullscreenMode(g_window);
+		if (m)
+			PsyX_Log_Warning("fullscreen: EXCLUSIVE %dx%d@%.2fHz (unexpected!)\n",
+				m->w, m->h, m->refresh_rate);
+		else
+			PsyX_Log_Info("fullscreen: borderless desktop, window %dx%d\n",
+				g_windowWidth, g_windowHeight);
+	}
+	else
+		PsyX_Log_Info("fullscreen: left, window %dx%d\n", g_windowWidth, g_windowHeight);
+
 	GR_ResetDevice();
 }
 
