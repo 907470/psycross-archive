@@ -96,6 +96,14 @@ extern PsyXPostRenderOverlayFunc	g_psyx_postRenderOverlay;
  * of SetGeomOffset's x-component so the wider geometry is centred. */
 extern float g_psyx_render_aspect_factor;
 
+/* Audio capture mode. When non-zero at PsyX_SPUAL_InitSound, OpenAL opens a
+ * loopback device instead of the normal output device so the mixed SPU PCM
+ * can be pulled (PsyX_SPUAL_CaptureDrain) for --record. The host sets this
+ * before init; default 0 leaves normal playback completely unchanged. When
+ * ALC_EXT_loopback is unavailable the normal output device opens instead and
+ * PsyX_SPUAL_CaptureDrain returns 0. */
+extern int g_psyx_audioCaptureMode;
+
 /* Pad input override. When != 0xFFFF, PsyX_Pad_InternalPadUpdates uses this
  * value verbatim instead of polling SDL keyboard / gamepad — same convention
  * as PsyX_Pad_UpdateKeyboardInput's return value (released bits set, pressed

@@ -39,6 +39,13 @@ extern void PsyX_SPUAL_GetAllKeysStatus(char* status);
  * Generator") and is independent of the audio device. */
 extern void PsyX_SPUAL_TickEnvelope(int samples);
 
+// Loopback audio capture (gated on g_psyx_audioCaptureMode at InitSound).
+// CaptureDrain pulls mixed stereo s16 @ 44100 frames into a caller buffer
+// (interleaved L,R), returning frames written; CaptureActive reports whether
+// loopback capture is live. Both return 0 while capture is inactive.
+extern int PsyX_SPUAL_CaptureDrain(short* out, int max_frames);
+extern int PsyX_SPUAL_CaptureActive(void);
+
 extern int PsyX_SPUAL_SetMute(int on_off);
 extern int PsyX_SPUAL_SetReverb(int on_off);
 extern int PsyX_SPUAL_GetReverbState();

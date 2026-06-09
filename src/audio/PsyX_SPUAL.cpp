@@ -503,6 +503,28 @@ static void SPUAL_Voice_KeyOn(SPUALVoice* v)
 ALCdevice*	g_ALCdevice = NULL;
 ALCcontext* g_ALCcontext = NULL;
 int			g_SPUMuted = 0;
+
+/* --- Audio capture (OpenAL loopback). Enabled by g_psyx_audioCaptureMode,
+ *     set by the host (openpete) before PsyX_SPUAL_InitSound, so ONLY
+ *     recording sessions switch to a loopback device — normal playback keeps
+ *     the real `alcOpenDevice` path untouched. In loopback mode OpenAL does
+ *     not auto-play; PsyX_SPUAL_TickEnvelope pulls the mixed PCM with
+ *     alcRenderSamplesSOFT, optionally pushes it to an SDL audio stream for
+ *     live monitoring, and tees a copy into a ring the host drains into the
+ *     recorder (PsyX_SPUAL_CaptureDrain). See openpete-record-audio.md. */
+extern "C" int g_psyx_audioCaptureMode = 0;
+static int  s_alLoopback = 0;           /* loopback device live */
+static LPALCLOOPBACKOPENDEVICESOFT s_alcLoopbackOpenDeviceSOFT = NULL;
+static LPALCRENDERSAMPLESSOFT      s_alcRenderSamplesSOFT      = NULL;
+static SDL_AudioStream* s_capPlayback = NULL;   /* live monitor (best-effort) */
+
+/* Mixed stereo s16 @ 44100 capture ring. Single-threaded under cooperative
+ * fibers, but guarded for safety. Indices/counts are in stereo frames. */
+#define SPUAL_CAP_FRAMES (44100)        /* ~1 s of slack */
+static int16_t   s_capRing[SPUAL_CAP_FRAMES * 2];
+static int       s_capHead = 0, s_capTail = 0, s_capCount = 0;
+static SDL_Mutex* s_capMutex = NULL;
+static unsigned long long s_capProduced = 0, s_capDropped = 0;
 ALuint		g_ALEffectSlots[2];
 int			g_currEffectSlotIdx = 0;
 ALuint		g_nAlReverbEffect = 0;
@@ -596,6 +618,28 @@ int PsyX_SPUAL_InitSound()
 	if (g_ALCdevice)
 		return 1;
 
+	/* Capture mode: open a loopback device first. It works without a real
+	 * output device (e.g. headless), so it is tried before the normal
+	 * enumeration/open path below. */
+	if (g_psyx_audioCaptureMode)
+	{
+		s_alcLoopbackOpenDeviceSOFT = (LPALCLOOPBACKOPENDEVICESOFT)alcGetProcAddress(NULL, "alcLoopbackOpenDeviceSOFT");
+		s_alcRenderSamplesSOFT      = (LPALCRENDERSAMPLESSOFT)alcGetProcAddress(NULL, "alcRenderSamplesSOFT");
+		if (s_alcLoopbackOpenDeviceSOFT && s_alcRenderSamplesSOFT)
+		{
+			g_ALCdevice = s_alcLoopbackOpenDeviceSOFT(NULL);
+			if (g_ALCdevice)
+			{
+				s_alLoopback = 1;
+				if (!s_capMutex) s_capMutex = SDL_CreateMutex();
+				s_capHead = s_capTail = s_capCount = 0;
+				eprintinfo("audio capture: OpenAL loopback active (44100/stereo/s16)\n");
+			}
+		}
+		if (!s_alLoopback)
+			eprinterr("audio capture: ALC_EXT_loopback unavailable; recording will have no audio\n");
+	}
+
 	numDevices = 0;
 
 	// Init openAL
@@ -612,10 +656,13 @@ int PsyX_SPUAL_InitSound()
 		numDevices++;
 	}
 
-	if(numDevices == 0)
+	/* Loopback mode already holds a device; don't require enumerated output
+	 * devices (headless has none). */
+	if (!g_ALCdevice && numDevices == 0)
 		return 0;
-	
-	g_ALCdevice = alcOpenDevice(NULL);
+
+	if (!g_ALCdevice)
+		g_ALCdevice = alcOpenDevice(NULL);
 
 	alErr = AL_NO_ERROR;
 
@@ -626,8 +673,19 @@ int PsyX_SPUAL_InitSound()
 		return 0;
 	}
 
+	/* Loopback contexts must pin the render format we'll pull samples in. */
+	static int al_loopback_params[] =
+	{
+		ALC_FREQUENCY, 44100,
+		ALC_FORMAT_CHANNELS_SOFT, ALC_STEREO_SOFT,
+		ALC_FORMAT_TYPE_SOFT, ALC_SHORT_SOFT,
 #ifndef __EMSCRIPTEN__
-	g_ALCcontext = alcCreateContext(g_ALCdevice, al_context_params);
+		ALC_MAX_AUXILIARY_SENDS, 2,
+#endif
+		0
+	};
+#ifndef __EMSCRIPTEN__
+	g_ALCcontext = alcCreateContext(g_ALCdevice, s_alLoopback ? al_loopback_params : al_context_params);
 #else
 	g_ALCcontext = alcCreateContext(g_ALCdevice, NULL);
 #endif
@@ -651,6 +709,27 @@ int PsyX_SPUAL_InitSound()
 	// Setup defaults
 	alListenerf(AL_GAIN, 1.0f);
 	alDistanceModel(AL_NONE);
+
+	/* Loopback mode best-effort live monitor: loopback OpenAL does not
+	 * auto-play, so feed the rendered mix to an SDL output stream for live
+	 * sound while recording. Headless / no device -> capture-only (silent
+	 * to speakers, still recorded). */
+	if (s_alLoopback)
+	{
+		if (SDL_InitSubSystem(SDL_INIT_AUDIO))
+		{
+			SDL_AudioSpec spec;
+			spec.format = SDL_AUDIO_S16;
+			spec.channels = 2;
+			spec.freq = 44100;
+			s_capPlayback = SDL_OpenAudioDeviceStream(
+				SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+			if (s_capPlayback)
+				SDL_ResumeAudioStreamDevice(s_capPlayback);
+			else
+				eprintinfo("audio capture: no output device for live monitor (capture-only)\n");
+		}
+	}
 
 	// create channels
 	for (i = 0; i < s_spuVoiceCount; i++)
@@ -701,6 +780,16 @@ void PsyX_SPUAL_ShutdownSound()
 
 	g_ALCcontext = NULL;
 	g_ALCdevice = NULL;
+
+	/* Tear down loopback capture (the recorder is flushed separately by the
+	 * host before this runs). */
+	if (s_capPlayback)
+	{
+		SDL_DestroyAudioStream(s_capPlayback);
+		s_capPlayback = NULL;
+	}
+	s_alLoopback = 0;
+	s_capHead = s_capTail = s_capCount = 0;
 #endif // __EMSCRIPTEN__
 }
 
@@ -1287,6 +1376,69 @@ void PsyX_SPUAL_TickEnvelope(int samples)
 		}
 	}
 	SDL_UnlockMutex(g_SpuMutex);
+
+	/* Loopback capture: pull the mixed PCM for these `samples` frames (the
+	 * SPU envelope cadence is the audio clock — 735 frames/VBL), feed the
+	 * live monitor, and tee into the capture ring for the recorder. Rendered
+	 * outside g_SpuMutex; audio runs on the single game/host fiber so the
+	 * OpenAL state is stable here. */
+	if (s_alLoopback && s_alcRenderSamplesSOFT)
+	{
+		int16_t tmp[2048 * 2];
+		int remaining = samples;
+		while (remaining > 0)
+		{
+			const int n = remaining > 2048 ? 2048 : remaining;
+			s_alcRenderSamplesSOFT(g_ALCdevice, tmp, n);  /* n stereo frames */
+			if (s_capPlayback)
+				SDL_PutAudioStreamData(s_capPlayback, tmp, n * 2 * (int)sizeof(int16_t));
+			SDL_LockMutex(s_capMutex);
+			for (int f = 0; f < n; f++)
+			{
+				if (s_capCount >= SPUAL_CAP_FRAMES)
+				{
+					/* Ring full (consumer behind) — drop oldest. */
+					s_capTail = (s_capTail + 1) % SPUAL_CAP_FRAMES;
+					s_capCount--;
+					s_capDropped++;
+				}
+				s_capRing[s_capHead * 2 + 0] = tmp[f * 2 + 0];
+				s_capRing[s_capHead * 2 + 1] = tmp[f * 2 + 1];
+				s_capHead = (s_capHead + 1) % SPUAL_CAP_FRAMES;
+				s_capCount++;
+				s_capProduced++;
+			}
+			SDL_UnlockMutex(s_capMutex);
+			remaining -= n;
+		}
+	}
+}
+
+/* Drain up to max_frames mixed stereo s16 frames into `out` (interleaved
+ * L,R). Returns the number of stereo frames written. 0 if capture inactive.
+ * Called by the host (openpete) to feed the recorder's audio stream. */
+extern "C" int PsyX_SPUAL_CaptureDrain(int16_t* out, int max_frames)
+{
+	if (!s_alLoopback || !s_capMutex || !out || max_frames <= 0)
+		return 0;
+	int drained = 0;
+	SDL_LockMutex(s_capMutex);
+	while (drained < max_frames && s_capCount > 0)
+	{
+		out[drained * 2 + 0] = s_capRing[s_capTail * 2 + 0];
+		out[drained * 2 + 1] = s_capRing[s_capTail * 2 + 1];
+		s_capTail = (s_capTail + 1) % SPUAL_CAP_FRAMES;
+		s_capCount--;
+		drained++;
+	}
+	SDL_UnlockMutex(s_capMutex);
+	return drained;
+}
+
+/* 1 if loopback capture is live (host should pull audio), else 0. */
+extern "C" int PsyX_SPUAL_CaptureActive(void)
+{
+	return s_alLoopback;
 }
 
 int PsyX_SPUAL_SetReverb(int on_off)
