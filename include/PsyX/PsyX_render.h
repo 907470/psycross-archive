@@ -203,6 +203,20 @@ extern void			GR_PresentCroppedToWindow();
 extern int			GR_GetPresentSceneSize(int* out_w, int* out_h);
 extern int			GR_ReadPresentSceneRGBA(unsigned char* pixels, int w, int h, unsigned int gl_format);
 
+// Asynchronous present-scene readback ring (non-stalling capture for
+// --record at high frame rates). Submit issues a glReadPixels into a
+// rotating PBO; Map/Unmap retrieve a frame submitted RingDepth-1 frames
+// earlier once its DMA has completed. Single GL thread. Pixels are bottom-up
+// (GL origin). Returns 0 / NULL when there is no present FBO. Protocol: when
+// Pending()==RingDepth(), Map the oldest, copy it, Unmap; then Submit the
+// current frame. Drain in-flight frames at shutdown by Map/Unmap until
+// Pending()==0.
+extern int			GR_PresentPBO_RingDepth(void);
+extern int			GR_PresentPBO_Pending(void);
+extern int			GR_PresentPBO_Submit(unsigned int gl_format, int* out_w, int* out_h);
+extern unsigned char* GR_PresentPBO_Map(int* out_w, int* out_h);
+extern void			GR_PresentPBO_Unmap(void);
+
 extern void			GR_UpdateVRAM();
 extern void			GR_ReadFramebufferDataToVRAM();
 

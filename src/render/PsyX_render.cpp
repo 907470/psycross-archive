@@ -669,6 +669,108 @@ extern "C" int GR_ReadPresentSceneRGBA(unsigned char* pixels, int w, int h, unsi
 #endif
 }
 
+/* Asynchronous present-scene readback ring. GR_ReadPresentSceneRGBA stalls
+ * the GL thread until the GPU finishes the transfer; for continuous capture
+ * (--record at high frame rates) that serializes CPU and GPU. This ring
+ * issues each glReadPixels into a rotating pixel-pack buffer (PBO) so the
+ * DMA overlaps subsequent rendering, then hands back a frame submitted a few
+ * frames earlier once its transfer has completed. Single GL thread only.
+ *
+ * Protocol (per frame, before EndScene): if Pending == RingDepth, Map the
+ * oldest buffer, copy it out, Unmap; then Submit the current frame. At
+ * shutdown, Map/Unmap until Pending reaches 0 to drain in-flight frames.
+ * Rows are bottom-up (GL origin), same as GR_ReadPresentSceneRGBA. */
+#define PRESENT_PBO_RING 4
+static GLuint s_presentPBO[PRESENT_PBO_RING];
+static int    s_presentPBO_w[PRESENT_PBO_RING];
+static int    s_presentPBO_h[PRESENT_PBO_RING];
+static int    s_presentPBO_inited = 0;
+static int    s_presentPBO_tail   = 0;  /* oldest in-flight slot */
+static int    s_presentPBO_count  = 0;  /* in-flight buffers */
+static int    s_presentPBO_mapped = 0;  /* tail currently mapped */
+
+extern "C" int GR_PresentPBO_RingDepth(void) { return PRESENT_PBO_RING; }
+extern "C" int GR_PresentPBO_Pending(void)   { return s_presentPBO_count; }
+
+/* Issue an async read of the current present scene into the next free PBO.
+ * Returns 1 (+ submitted dims) on success, 0 if there is no present FBO or
+ * the ring is full (caller must Map/Unmap an entry first). */
+extern "C" int GR_PresentPBO_Submit(unsigned int gl_format, int* out_w, int* out_h)
+{
+#if USE_OPENGL
+	if (!g_glPresentFramebuffer || s_presentPBO_count >= PRESENT_PBO_RING)
+		return 0;
+	int x, y, w, h;
+	if (!GR_GetPresentSceneCrop(&x, &y, &w, &h) || w <= 0 || h <= 0)
+		return 0;
+	if (!s_presentPBO_inited) {
+		glGenBuffers(PRESENT_PBO_RING, s_presentPBO);
+		for (int i = 0; i < PRESENT_PBO_RING; ++i) { s_presentPBO_w[i] = s_presentPBO_h[i] = 0; }
+		s_presentPBO_inited = 1;
+	}
+	const int slot = (s_presentPBO_tail + s_presentPBO_count) % PRESENT_PBO_RING;
+	GLboolean prev_scissor = glIsEnabled(GL_SCISSOR_TEST);
+	if (prev_scissor) glDisable(GL_SCISSOR_TEST);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, g_glPresentFramebuffer);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, s_presentPBO[slot]);
+	/* Orphan + size the buffer; the slot is free (not in flight) so this
+	 * never blocks on a pending transfer. RGBA8 => row pitch w*4 is always
+	 * 4-aligned, so the default GL_PACK_ALIGNMENT needs no adjustment. */
+	glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)((size_t)w * h * 4), NULL, GL_STREAM_READ);
+	glReadPixels(x, y, w, h, (GLenum)gl_format, GL_UNSIGNED_BYTE, (void*)0);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	if (prev_scissor) glEnable(GL_SCISSOR_TEST);
+	s_presentPBO_w[slot] = w;
+	s_presentPBO_h[slot] = h;
+	s_presentPBO_count++;
+	if (out_w) *out_w = w;
+	if (out_h) *out_h = h;
+	return 1;
+#else
+	(void)gl_format; (void)out_w; (void)out_h;
+	return 0;
+#endif
+}
+
+/* Map the oldest in-flight buffer for reading. Returns a pointer to its
+ * pixels (w*h*4, bottom-up) + dims, or NULL if the ring is empty / already
+ * mapped. The pointer is valid until GR_PresentPBO_Unmap. */
+extern "C" unsigned char* GR_PresentPBO_Map(int* out_w, int* out_h)
+{
+#if USE_OPENGL
+	if (s_presentPBO_count <= 0 || s_presentPBO_mapped)
+		return NULL;
+	const int slot = s_presentPBO_tail;
+	const int w = s_presentPBO_w[slot], h = s_presentPBO_h[slot];
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, s_presentPBO[slot]);
+	void* p = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0,
+	                           (GLsizeiptr)((size_t)w * h * 4), GL_MAP_READ_BIT);
+	if (!p) { glBindBuffer(GL_PIXEL_PACK_BUFFER, 0); return NULL; }
+	s_presentPBO_mapped = 1;
+	if (out_w) *out_w = w;
+	if (out_h) *out_h = h;
+	return (unsigned char*)p;
+#else
+	(void)out_w; (void)out_h;
+	return NULL;
+#endif
+}
+
+/* Unmap + retire the oldest in-flight buffer (advances the ring). */
+extern "C" void GR_PresentPBO_Unmap(void)
+{
+#if USE_OPENGL
+	if (!s_presentPBO_mapped)
+		return;
+	glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	s_presentPBO_mapped = 0;
+	s_presentPBO_tail = (s_presentPBO_tail + 1) % PRESENT_PBO_RING;
+	s_presentPBO_count--;
+#endif
+}
+
 extern "C" void GR_PresentCroppedToWindow()
 {
 #if USE_OPENGL
