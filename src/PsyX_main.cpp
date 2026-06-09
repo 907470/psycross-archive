@@ -700,6 +700,21 @@ void PsyX_Exit();
 int g_activeKeyboardControllers = 0x1;
 int g_altKeyState = 0;
 
+/* Toggle between windowed and borderless-fullscreen-desktop. In SDL3,
+ * SDL_SetWindowFullscreen(window, true) with no exclusive display mode set
+ * (the default) is borderless fullscreen desktop — it fills the display at
+ * its current desktop mode rather than switching video modes. Bound to both
+ * Alt+Enter and a double-click anywhere in the window. */
+static void PsyX_Sys_ToggleFullscreen()
+{
+	bool fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
+
+	SDL_SetWindowFullscreen(g_window, !fullscreen);
+
+	SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
+	GR_ResetDevice();
+}
+
 void PsyX_Sys_DoPollEvent()
 {
 	SDL_Event event;
@@ -730,12 +745,19 @@ void PsyX_Sys_DoPollEvent()
 
 				PsyX_Sys_DoDebugMouseMotion((int)event.motion.x, (int)event.motion.y);
 				break;
+			case SDL_EVENT_MOUSE_BUTTON_DOWN:
+				/* Double-click anywhere in the window toggles fullscreen. */
+				if (event.button.button == SDL_BUTTON_LEFT && event.button.clicks == 2)
+				{
+					PsyX_Sys_ToggleFullscreen();
+				}
+				break;
 			case SDL_EVENT_KEY_DOWN:
 			case SDL_EVENT_KEY_UP:
 			{
 				int nKey = event.key.scancode;
 
-				if (nKey == SDL_SCANCODE_RALT)
+				if (nKey == SDL_SCANCODE_LALT || nKey == SDL_SCANCODE_RALT)
 				{
 					g_altKeyState = (event.type == SDL_EVENT_KEY_DOWN);
 				}
@@ -743,12 +765,7 @@ void PsyX_Sys_DoPollEvent()
 				{
 					if (g_altKeyState && event.type == SDL_EVENT_KEY_DOWN)
 					{
-						bool fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
-
-						SDL_SetWindowFullscreen(g_window, !fullscreen);
-
-						SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
-						GR_ResetDevice();
+						PsyX_Sys_ToggleFullscreen();
 					}
 					break;
 				}
