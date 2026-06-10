@@ -945,6 +945,8 @@ void PsyX_EndScene()
 		extern unsigned g_openpete_render_cache_lookup_count;
 		extern unsigned g_openpete_render_cache_hit_count;
 		extern unsigned g_openpete_render_cache_probe_overflow_count;
+		extern unsigned g_openpete_render_cache_collide_xobj;
+		extern unsigned g_openpete_render_cache_collide_samobj;
 		extern unsigned g_openpete_render_cache_matrix_span_id;
 		/* Renderer-foundation Phase 1 (matcher) counters. */
 		extern unsigned g_openpete_render_matcher_batch_count;
@@ -980,7 +982,8 @@ void PsyX_EndScene()
 			             (double)g_openpete_render_probe_count_matrix_changes
 			           : 0.0);
 			printf("[render-probe] f%u CACHE emit=%u lookup=%u hit=%u "
-			       "(hit_rate=%.1f%%) probe_overflow=%u spans=%u\n",
+			       "(hit_rate=%.1f%%) probe_overflow=%u spans=%u "
+			       "collide_xobj=%u sam=%u\n",
 			       openpete_frame,
 			       g_openpete_render_cache_emit_count,
 			       g_openpete_render_cache_lookup_count,
@@ -990,7 +993,9 @@ void PsyX_EndScene()
 			             (double)g_openpete_render_cache_lookup_count
 			           : 0.0,
 			       g_openpete_render_cache_probe_overflow_count,
-			       g_openpete_render_cache_matrix_span_id);
+			       g_openpete_render_cache_matrix_span_id,
+			       g_openpete_render_cache_collide_xobj,
+			       g_openpete_render_cache_collide_samobj);
 			unsigned m_total = g_openpete_render_matcher_matched_count +
 			                   g_openpete_render_matcher_unmatched_new_count;
 			printf("[render-probe] f%u MATCH batches=%u matched=%u new=%u "
@@ -1039,6 +1044,8 @@ void PsyX_EndScene()
 			g_openpete_render_cache_lookup_count          = 0;
 			g_openpete_render_cache_hit_count             = 0;
 			g_openpete_render_cache_probe_overflow_count  = 0;
+			g_openpete_render_cache_collide_xobj          = 0;
+			g_openpete_render_cache_collide_samobj       = 0;
 			/* matrix_span_id is monotonic across the run (not per-frame). */
 		}
 	}
