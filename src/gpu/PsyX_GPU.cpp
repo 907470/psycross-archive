@@ -232,7 +232,7 @@ extern "C" {
     /* Overlay v2 state classifier — values mirror the OPENPETE_DBGST_*
      * enum in openpete_render_matcher.h (0 none, 1 tag-absent,
      * 2 tag-insane, 3 corr-frozen, 4 heur-paired, 5 legacy-world,
-     * 6 vert-miss). */
+     * 6 vert-miss, 7 abs-follow). */
     int openpete_render_matcher_debug_state(const int16_t* p);
     extern int g_openpete_dbg_highlight_smoothed;
     int64_t op_now(void);
@@ -285,6 +285,8 @@ static inline float openpete_get_lerp_alpha() {
  *   BLUE    legacy obj_tag==0 world (§7.3 composite-reproject path)
  *   CYAN    batch paired but vertex tomap-missed (animated v_local
  *           churn / culled-in vert) — vertex frozen
+ *   WHITE   tag-absent world batch riding a borrowed neighbor rigid
+ *           mean (§13.14 absent-follow — one-frame cull transient)
  * Problem states win over green; the numerically highest state across
  * the prim's verts is shown. Uncolored = static or UI. */
 static int  s_dbg_prim_state = 0;
@@ -325,7 +327,7 @@ static inline bool openpete_dbg_apply_color(GrVertex* v, int n) {
 	s_dbg_prim_moved = false;
 	if (st == 0 && !moved) return false;
 	/* Index = OPENPETE_DBGST_* value; slot 0 = healthy-moved green. */
-	static const unsigned char k_rgb[7][3] = {
+	static const unsigned char k_rgb[8][3] = {
 		{   0, 200,   0 },  /* 0 moved        green   */
 		{ 255,   0,   0 },  /* 1 tag-absent   red     */
 		{ 255, 255,   0 },  /* 2 tag-insane   yellow  */
@@ -333,8 +335,9 @@ static inline bool openpete_dbg_apply_color(GrVertex* v, int n) {
 		{ 255,   0, 255 },  /* 4 heur-paired  magenta */
 		{   0,  64, 255 },  /* 5 legacy-world blue    */
 		{   0, 255, 255 },  /* 6 vert-miss    cyan    */
+		{ 255, 255, 255 },  /* 7 abs-follow   white   */
 	};
-	const unsigned char* rgb = k_rgb[(st > 0 && st <= 6) ? st : 0];
+	const unsigned char* rgb = k_rgb[(st > 0 && st <= 7) ? st : 0];
 	for (int i = 0; i < n; ++i) {
 		/* TINT, don't repaint: keep page/clut/uv so the prim renders
 		 * through its normal (textured or not) path with the state
