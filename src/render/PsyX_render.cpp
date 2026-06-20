@@ -2142,6 +2142,35 @@ void GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int dst_x, int
 		stride = VRAM_WIDTH;
 	}
 
+	/* PSX-GPU coordinate masking + VRAM-bounds clamp. The real GPU masks every
+	 * VRAM transfer coordinate into the 1024x512 framebuffer (X & 0x3FF,
+	 * Y & 0x1FF) and never touches memory outside it. PsyCross omitted that, so
+	 * a malformed primitive — e.g. a stray OT tag with code byte 0x_1 misparsed
+	 * as DR_MOVE, whose payload decodes to nonsense rect coords — would index
+	 * far past `vram[]` and write off the end of the buffer (observed SEGV in
+	 * Dream Weavers). For any in-range copy this is a no-op: the mask is
+	 * identity for coords < dimension, and the clamp leaves a rect that already
+	 * fits untouched (verified against Spyro's only MoveImage call sites,
+	 * draw.c:1675/1768). Wrap-around isn't reproduced — only legitimate,
+	 * non-wrapping copies occur in practice, so bounding the pathological case
+	 * to VRAM is sufficient and safe. `vram` is the framebuffer mirror only —
+	 * presentation state, never gameplay-readable RAM — so this cannot perturb
+	 * the determinism oracle. */
+	if (w <= 0 || h <= 0)
+		return;
+	if (src == vram) {              /* VRAM->VRAM: mask the source origin too */
+		x &= (VRAM_WIDTH - 1);
+		y &= (VRAM_HEIGHT - 1);
+		if (x + w > VRAM_WIDTH)  w = VRAM_WIDTH  - x;
+		if (y + h > VRAM_HEIGHT) h = VRAM_HEIGHT - y;
+	}
+	dst_x &= (VRAM_WIDTH - 1);
+	dst_y &= (VRAM_HEIGHT - 1);
+	if (dst_x + w > VRAM_WIDTH)  w = VRAM_WIDTH  - dst_x;
+	if (dst_y + h > VRAM_HEIGHT) h = VRAM_HEIGHT - dst_y;
+	if (w <= 0 || h <= 0)
+		return;
+
 	src += x + y * stride;
 
 	unsigned short* dst = vram + dst_x + dst_y * VRAM_WIDTH;
