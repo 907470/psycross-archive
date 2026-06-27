@@ -700,44 +700,6 @@ void PsyX_Exit();
 int g_activeKeyboardControllers = 0x1;
 int g_altKeyState = 0;
 
-/* Toggle between windowed and *borderless* fullscreen desktop. Bound to both
- * Alt+Enter and a double-click anywhere in the window.
- *
- * In SDL3 the kind of fullscreen is decided by the window's fullscreen *mode*:
- * a non-NULL mode → exclusive (video-mode switch); NULL → borderless desktop
- * (fills the display at its current desktop mode). We always want borderless,
- * so force the mode to NULL before entering fullscreen rather than relying on
- * the backend default (which can resolve to an exclusive mode). */
-static void PsyX_Sys_ToggleFullscreen()
-{
-	bool fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
-
-	if (!fullscreen)
-		SDL_SetWindowFullscreenMode(g_window, NULL);  /* borderless desktop */
-
-	SDL_SetWindowFullscreen(g_window, !fullscreen);
-	SDL_SyncWindow(g_window);  /* settle the size change before we read it back */
-
-	SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
-
-	/* Ground truth for diagnosing "is this exclusive?": a non-NULL window
-	 * fullscreen mode is the ONLY way SDL3 video-mode-switches. */
-	if (!fullscreen)
-	{
-		const SDL_DisplayMode* m = SDL_GetWindowFullscreenMode(g_window);
-		if (m)
-			PsyX_Log_Warning("fullscreen: EXCLUSIVE %dx%d@%.2fHz (unexpected!)\n",
-				m->w, m->h, m->refresh_rate);
-		else
-			PsyX_Log_Info("fullscreen: borderless desktop, window %dx%d\n",
-				g_windowWidth, g_windowHeight);
-	}
-	else
-		PsyX_Log_Info("fullscreen: left, window %dx%d\n", g_windowWidth, g_windowHeight);
-
-	GR_ResetDevice();
-}
-
 void PsyX_Sys_DoPollEvent()
 {
 	SDL_Event event;
@@ -768,13 +730,6 @@ void PsyX_Sys_DoPollEvent()
 
 				PsyX_Sys_DoDebugMouseMotion((int)event.motion.x, (int)event.motion.y);
 				break;
-			case SDL_EVENT_MOUSE_BUTTON_DOWN:
-				/* Double-click anywhere in the window toggles fullscreen. */
-				if (event.button.button == SDL_BUTTON_LEFT && event.button.clicks == 2)
-				{
-					PsyX_Sys_ToggleFullscreen();
-				}
-				break;
 			case SDL_EVENT_KEY_DOWN:
 			case SDL_EVENT_KEY_UP:
 			{
@@ -786,10 +741,11 @@ void PsyX_Sys_DoPollEvent()
 				}
 				else if (nKey == SDL_SCANCODE_RETURN)
 				{
-					if (g_altKeyState && event.type == SDL_EVENT_KEY_DOWN)
-					{
-						PsyX_Sys_ToggleFullscreen();
-					}
+					/* Alt+Enter fullscreen now lives in the native renderer
+					 * (run.c -> openpete_native_toggle_fullscreen). g_altKeyState
+					 * still gates pad input (see PsyX_UpdateInput) so Enter isn't
+					 * read as Start while Alt is held. Swallow Enter here so it
+					 * isn't processed as a debug key. */
 					break;
 				}
 
