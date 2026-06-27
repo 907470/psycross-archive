@@ -90,6 +90,16 @@ int PsyX_Pad_InitSystem()
 	 * SDL3: SDL_GetGamepads returns instance ids of gamepad-capable
 	 * devices only, so the old per-index SDL_IsGameController filter is
 	 * no longer needed. */
+	/* openpete cold-plug fix: the memset above left every slot deviceId==0, but
+	 * PsyX_Pad_Event_ControllerAdded only binds a slot whose deviceId is -1
+	 * (auto) — so the enumeration below would open nothing for a pad present at
+	 * launch (the -1 is otherwise written only later, by PsyX_Pad_InitPad on the
+	 * game's PadInitDirect, by which point the cold-plug ADDED event has already
+	 * fired and been wasted). Seed the auto-assign sentinel now — the same value
+	 * InitPad uses — so the walk below can claim a launch-present pad. */
+	for (int i = 0; i < MAX_CONTROLLERS; i++)
+		g_controllers[i].deviceId = g_cfg_controllerToSlotMapping[i];
+
 	int n = 0;
 	SDL_JoystickID* gamepads = SDL_GetGamepads(&n);
 	if (gamepads)
@@ -173,7 +183,12 @@ void PsyX_Pad_InitPad(int slot, u_char* padData)
 	PsyXController* controller = &g_controllers[slot];
 
 	controller->padData = padData;
-	controller->deviceId = g_cfg_controllerToSlotMapping[slot];
+
+	/* openpete cold-plug fix: don't stomp a slot already bound to an open
+	 * controller (e.g. one the init enumeration opened before the game called
+	 * PadInitDirect); keep its real instance id so unplug still matches it. */
+	if (!controller->gc)
+		controller->deviceId = g_cfg_controllerToSlotMapping[slot];
 
 	if (padData)
 	{
@@ -237,6 +252,12 @@ void PsyX_Pad_Event_ControllerRemoved(Sint32 deviceId)
 		if (controller->deviceId == deviceId)
 		{
 			PsyX_Pad_CloseController(i);
+			/* openpete cold-plug fix: release the slot back to its configured
+			 * (auto-assign, -1) binding so a re-plugged controller — which SDL
+			 * hands a NEW instance id — can re-claim this slot. Without this the
+			 * slot stays pinned to the now-dead id and the re-plug spills into
+			 * the next slot (player 2) or nowhere. */
+			controller->deviceId = g_cfg_controllerToSlotMapping[i];
 		}
 	}
 }
