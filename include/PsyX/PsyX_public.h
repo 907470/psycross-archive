@@ -104,12 +104,24 @@ extern float g_psyx_render_aspect_factor;
  * PsyX_SPUAL_CaptureDrain returns 0. */
 extern int g_psyx_audioCaptureMode;
 
-/* Pad input override. When != 0xFFFF, PsyX_Pad_InternalPadUpdates uses this
- * value verbatim instead of polling SDL keyboard / gamepad — same convention
- * as PsyX_Pad_UpdateKeyboardInput's return value (released bits set, pressed
- * bits cleared). Set per-frame from the host loop to drive --bk2 movie
- * replay; reset to 0xFFFF when no override is active. */
+/* Pad input override (--bk2 replay). When g_PsyX_Pad_OverrideActive != 0,
+ * PsyX_Pad_InternalPadUpdates uses these button bits verbatim (same convention
+ * as PsyX_Pad_UpdateKeyboardInput: released set, pressed cleared) instead of
+ * polling SDL keyboard / gamepad. The separate active flag — not a 0xFFFF
+ * sentinel — gates it, so an analog frame with no buttons pressed (bits =
+ * 0xFFFF) still overrides and applies its g_PsyX_Pad_AnalogOverride axes. Set
+ * per-frame from the host loop; clear the flag when no movie frame is driving
+ * input (before the offset, or past the movie end). */
 extern unsigned short				g_PsyX_Pad_InputOverride;
+extern int							g_PsyX_Pad_OverrideActive;
+
+/* Analog axis override, paired with g_PsyX_Pad_InputOverride for --bk2 replay.
+ * Bytes are in PSX pad->analog order (RStick X, RStick Y, LStick X, LStick Y;
+ * 128 = centre). While the override is active (g_PsyX_Pad_InputOverride !=
+ * 0xFFFF) the pad is always presented analog (id 0x73) with these axes — Spyro
+ * behaves identically in digital vs analog mode except that analog drives the
+ * stick, so a digital-only movie just replays with these left at 128 (centre). */
+extern unsigned char				g_PsyX_Pad_AnalogOverride[4];
 
 /* Read P1's last computed pad bitfield (after PsyX_Pad_InternalPadUpdates). Same
  * "released = 1, pressed = 0" convention as g_PsyX_Pad_InputOverride. Returns
@@ -117,6 +129,12 @@ extern unsigned short				g_PsyX_Pad_InputOverride;
  * --bk2-record path to capture the merged keyboard/gamepad/override state into
  * a BizHawk-format input log. */
 extern unsigned short PsyX_Pad_GetLastP1Bits(void);
+
+/* Read P1's last computed analog axes (after PsyX_Pad_InternalPadUpdates) into
+ * out_axes[4] in PSX pad->analog order (RX, RY, LX, LY; 128 = centre); set to
+ * 128 when no controller buffer is registered yet. Used by the host's
+ * --bk2-record path to capture analog state. */
+extern void PsyX_Pad_GetLastP1Analog(unsigned char out_axes[4]);
 
 /* Usually called at the beginning of main function. `startHidden` creates
  * the window unmapped (no flash / focus-steal) — for headless / offscreen

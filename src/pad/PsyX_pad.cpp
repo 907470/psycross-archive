@@ -31,6 +31,11 @@ const bool*				g_sdlKeyboardState = NULL;  /* SDL3: keyboard state is bool[] */
  * openpete_core can extern it via PsyX/PsyX_public.h. */
 extern "C" {
 unsigned short g_PsyX_Pad_InputOverride = 0xFFFF;
+int g_PsyX_Pad_OverrideActive = 0;
+/* Analog-axis override for --bk2 replay; PSX pad->analog order (RX, RY, LX,
+ * LY), 128 = centre. Applied whenever the override is active (the pad is
+ * always presented analog). See PsyX_public.h. */
+unsigned char g_PsyX_Pad_AnalogOverride[4] = { 128, 128, 128, 128 };
 }
 
 /* See PsyX_public.h. Returns the last-merged P1 pad bits (0xFFFF when no
@@ -41,6 +46,22 @@ extern "C" unsigned short PsyX_Pad_GetLastP1Bits(void)
 	if (!g_controllers[0].padData) return 0xFFFF;
 	LPPADRAW pad = (LPPADRAW)g_controllers[0].padData;
 	return *(u_short*)pad->buttons;
+}
+
+/* See PsyX_public.h. Fills out_axes[4] with P1's analog axes in PSX
+ * pad->analog order (RX, RY, LX, LY). */
+extern "C" void PsyX_Pad_GetLastP1Analog(unsigned char out_axes[4])
+{
+	if (!g_controllers[0].padData)
+	{
+		out_axes[0] = out_axes[1] = out_axes[2] = out_axes[3] = 128;
+		return;
+	}
+	LPPADRAW pad = (LPPADRAW)g_controllers[0].padData;
+	out_axes[0] = pad->analog[0];
+	out_axes[1] = pad->analog[1];
+	out_axes[2] = pad->analog[2];
+	out_axes[3] = pad->analog[3];
 }
 
 u_short PsyX_Pad_UpdateKeyboardInput();
@@ -274,8 +295,9 @@ void PsyX_Pad_InternalPadUpdates()
 	/* --bk2 / future scripted-input path: when the host has set an override,
 	 * skip the SDL keyboard read entirely. Game-controller input is also
 	 * skipped below (we replace, don't AND), so the override wins cleanly
-	 * even if a real pad is plugged in. */
-	if (g_PsyX_Pad_InputOverride != 0xFFFF)
+	 * even if a real pad is plugged in. Gated on the active flag (not a 0xFFFF
+	 * sentinel) so an analog frame with no buttons still overrides. */
+	if (g_PsyX_Pad_OverrideActive)
 	{
 		kbInputs = g_PsyX_Pad_InputOverride;
 	}
@@ -292,14 +314,20 @@ void PsyX_Pad_InternalPadUpdates()
 		{
 			pad = (LPPADRAW)controller->padData;
 
-			/* Override path: write kbInputs straight in. Skip the analog
-			 * Select+Start toggle (don't want a movie that holds those to
-			 * flip pad->id) and skip gamepad polling (the override is the
-			 * single source of truth). */
-			if (g_PsyX_Pad_InputOverride != 0xFFFF)
+			/* Override path (--bk2 replay): write kbInputs + the recorded analog
+			 * axes straight in and skip gamepad/keyboard polling (the override is
+			 * the single source of truth). The pad is always presented analog (id
+			 * 0x73) — Spyro plays identically in digital vs analog mode except that
+			 * analog drives the stick, so a digital-only movie just replays with
+			 * the axes centred (128). */
+			if (g_PsyX_Pad_OverrideActive)
 			{
 				pad->status = 0;
-				if (pad->id != 0x41) pad->id = 0x41;
+				pad->id = 0x73;
+				pad->analog[0] = g_PsyX_Pad_AnalogOverride[0];
+				pad->analog[1] = g_PsyX_Pad_AnalogOverride[1];
+				pad->analog[2] = g_PsyX_Pad_AnalogOverride[2];
+				pad->analog[3] = g_PsyX_Pad_AnalogOverride[3];
 				*(u_short*)pad->buttons = kbInputs;
 				continue;
 			}
