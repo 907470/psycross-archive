@@ -306,14 +306,16 @@ void PsyX_Pad_InternalPadUpdates()
 
 			PsyX_Pad_UpdateGameControllerInput(controller->gc, pad);
 
-			/* Update keyboard for PAD — but only for slots WITHOUT a real
-			 * gamepad. A connected controller owns its slot; merging the
-			 * keyboard in too lets a controller that emits phantom keystrokes
-			 * (e.g. the Steam Controller's "lizard mode" desktop emulation)
-			 * bleed bogus presses into gameplay input — pressing the pad's A
-			 * would also fire Start because the controller types Return.
-			 * Slot has no gamepad -> keyboard drives it, as before. */
-			if ((g_activeKeyboardControllers & (1 << i)) && !controller->gc)
+			/* Merge keyboard-as-pad into this slot IN ADDITION to any gamepad
+			 * polled above, so keyboard and controller both drive the game at
+			 * once (buttons are active-low ANDed — either source presses; WASD
+			 * overrides the left stick only while held). We used to gate this on
+			 * !controller->gc ("a controller owns its slot") to stop a Steam-
+			 * Input config that types phantom keys from bleeding into gameplay,
+			 * but that killed WASD/ZXCV/arrows entirely whenever any pad was
+			 * connected. Same Steam-side-curable trade-off accepted for host
+			 * hotkeys (see openpete run.c). */
+			if (g_activeKeyboardControllers & (1 << i))
 			{
 				u_char kb_lx, kb_ly;
 				bool wasd_held = PsyX_Pad_UpdateKeyboardLeftStick(&kb_lx, &kb_ly);
