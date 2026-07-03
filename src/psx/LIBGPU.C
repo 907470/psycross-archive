@@ -25,8 +25,17 @@ int g_dbg_emulatorPaused = 0;
 
 void(*drawsync_callback)(void) = NULL;
 
+/* openpete W2.4: typed pre-write op forwarding (see PsyX_public.h). */
+static PsyX_VRAMOps g_vramOps = { NULL, NULL, NULL };
+extern "C" void PsyX_SetVRAMOpCallbacks(const PsyX_VRAMOps* ops)
+{
+	if (ops) g_vramOps = *ops;
+	else { g_vramOps.load = NULL; g_vramOps.move = NULL; g_vramOps.clear = NULL; }
+}
+
 int ClearImage(RECT16* rect, u_char r, u_char g, u_char b)
 {
+	if (g_vramOps.clear) g_vramOps.clear(rect->x, rect->y, rect->w, rect->h, r, g, b);
 	GR_ClearVRAM(rect->x, rect->y, rect->w, rect->h, r, g, b);
 
 	// TODO: clear all affected backbuffers
@@ -36,6 +45,7 @@ int ClearImage(RECT16* rect, u_char r, u_char g, u_char b)
 
 int ClearImage2(RECT16* rect, u_char r, u_char g, u_char b)
 {
+	if (g_vramOps.clear) g_vramOps.clear(rect->x, rect->y, rect->w, rect->h, r, g, b);
 	GR_ClearVRAM(rect->x, rect->y, rect->w, rect->h, r, g, b);
 
 	// TODO: clear all affected backbuffers
@@ -65,12 +75,14 @@ int DrawSync(int mode)
 
 int LoadImage(RECT16* rect, u_long* p)
 {
+	if (g_vramOps.load) g_vramOps.load(rect->x, rect->y, rect->w, rect->h, (const unsigned short*)p);
 	GR_CopyVRAM((unsigned short*)p, 0, 0, rect->w, rect->h, rect->x, rect->y);
 	return 0;
 }
 
 int LoadImage2(RECT16* rect, u_long* p)
 {
+	if (g_vramOps.load) g_vramOps.load(rect->x, rect->y, rect->w, rect->h, (const unsigned short*)p);
 	GR_CopyVRAM((unsigned short*)p, 0, 0, rect->w, rect->h, rect->x, rect->y);
 
 	// simulate immediate mode
@@ -132,6 +144,7 @@ int MargePrim(void* p0, void* p1)
 
 int MoveImage(RECT16* rect, int x, int y)
 {
+	if (g_vramOps.move) g_vramOps.move(rect->x, rect->y, rect->w, rect->h, x, y);
 	GR_CopyVRAM(NULL, rect->x, rect->y, rect->w, rect->h, x, y);
 	return 0;
 }

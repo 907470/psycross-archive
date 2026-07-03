@@ -207,6 +207,21 @@ extern int  PsyX_VRAM_Restore (const void* src, unsigned int src_size);
  * may read the written region from the mirror immediately. NULL disables. */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 
+/* --- VRAM op forwarding (openpete W2.4 native op implementations) ---------- *
+ * Typed pre-write forwarding of the PSYQ image ops with their RAW arguments
+ * (no masking/clamping applied), fired from the LIBGPU adapters — which also
+ * catches the OT-embedded DR_LOAD/DR_MOVE transfer packets and the
+ * LoadTPage/LoadClut wrappers (both funnel into LoadImage/MoveImage). The
+ * consumer implements the PSX masking semantics itself. StoreImage is a read
+ * and is not forwarded. NULL entries / NULL ops disable. */
+typedef struct PsyX_VRAMOps {
+	void (*load) (int x, int y, int w, int h, const unsigned short* src);
+	void (*move) (int src_x, int src_y, int w, int h, int dst_x, int dst_y);
+	void (*clear)(int x, int y, int w, int h,
+	              unsigned char r, unsigned char g, unsigned char b);
+} PsyX_VRAMOps;
+extern void PsyX_SetVRAMOpCallbacks(const PsyX_VRAMOps* ops);
+
 #if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
 }
 #endif
