@@ -897,6 +897,18 @@ void GR_EndScene()
 
 unsigned short vram[VRAM_WIDTH * VRAM_HEIGHT];
 
+/* openpete W2.4: post-write dirty notification (see PsyX_public.h). */
+static void (*g_vramDirtyCb)(int x, int y, int w, int h) = NULL;
+extern "C" void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h))
+{
+	g_vramDirtyCb = cb;
+}
+static inline void VRAM_DirtyNotify(int x, int y, int w, int h)
+{
+	if (g_vramDirtyCb)
+		g_vramDirtyCb(x, y, w, h);
+}
+
 /* See PsyX_public.h. The CPU-side `vram` mirror is authoritative — every
  * write path (LoadImage, MoveImage, framebuffer copyback) goes through it
  * and sets vram_need_update so GR_UpdateVRAM uploads the new bytes to the
@@ -919,6 +931,7 @@ extern "C" int PsyX_VRAM_Restore(const void* src, unsigned int src_size)
 	if (!src || src_size != PsyX_VRAM_GetSize()) return -1;
 	memcpy(vram, src, src_size);
 	vram_need_update = 1;
+	VRAM_DirtyNotify(0, 0, VRAM_WIDTH, VRAM_HEIGHT);
 	return 0;
 }
 
@@ -1795,6 +1808,9 @@ void GR_ClearVRAM(int x, int y, int w, int h, unsigned char r, unsigned char g, 
 
 		dst += VRAM_WIDTH;
 	}
+
+	if (w > 0 && h > 0)
+		VRAM_DirtyNotify(x, y, w, h);
 }
 
 void GR_Clear(int x, int y, int w, int h, unsigned char r, unsigned char g, unsigned char b)
@@ -1896,6 +1912,8 @@ void GR_CopyRGBAFramebufferToVRAM(u_int* src, int x, int y, int w, int h, int up
 
 	if (update_vram)
 		vram_need_update = 1;
+
+	VRAM_DirtyNotify(x, y, w, h);
 }
 
 void GR_ReadFramebufferDataToVRAM()
@@ -2180,6 +2198,8 @@ void GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int dst_x, int
 		dst += VRAM_WIDTH;
 		src += stride;
 	}
+
+	VRAM_DirtyNotify(dst_x, dst_y, w, h);
 }
 
 void GR_ReadVRAM(unsigned short* dst, int x, int y, int dst_w, int dst_h)

@@ -198,6 +198,15 @@ extern unsigned int PsyX_VRAM_GetSize(void);
 extern int  PsyX_VRAM_Snapshot(void* dst, unsigned int dst_size);
 extern int  PsyX_VRAM_Restore (const void* src, unsigned int src_size);
 
+/* --- VRAM write notification (openpete W2.4 native VRAM model) ------------- *
+ * Fired after EVERY write to the CPU-side `vram` mirror with the effective
+ * (post-mask/clamp) rect: GR_CopyVRAM (LoadImage/MoveImage + DR_LOAD/DR_MOVE),
+ * GR_ClearVRAM (ClearImage), GR_CopyRGBAFramebufferToVRAM (framebuffer
+ * copyback), PsyX_VRAM_Restore (savestate, full frame). The callback runs on
+ * the caller's thread, synchronously, after the bytes have landed — a consumer
+ * may read the written region from the mirror immediately. NULL disables. */
+extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
+
 #if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
 }
 #endif
