@@ -87,7 +87,6 @@ TextureID g_presentColorTexture = -1;
 GLuint g_glPresentFramebuffer = 0;
 GLuint g_glPresentDepthStencilRBO = 0;
 GLuint g_glOffscreenDepthStencilRBO = 0;  /* Day 3 PGXP-Z-buffer mode */
-unsigned int g_pgxp_split_seq = 0;        /* per-frame draw-call counter */
 int g_presentFbWidth = 0;
 int g_presentFbHeight = 0;
 
@@ -100,8 +99,11 @@ int g_windowHeight = 0;
 int g_dbg_wireframeMode = 0;
 int g_dbg_texturelessMode = 0;
 
-int g_cfg_pgxpTextureCorrection = 1;
-int g_cfg_pgxpZBuffer = 1;
+/* openpete: default OFF (canonical PSX look for the reference renderer).
+ * The openpete PGXP consumer stack was deleted 2026-07-06; nothing sets
+ * these any more (F5/F6 toggles removed with it). */
+int g_cfg_pgxpTextureCorrection = 0;
+int g_cfg_pgxpZBuffer = 0;
 int g_cfg_bilinearFiltering = 0;
 
 int vram_need_update = 1;
@@ -865,7 +867,6 @@ void GR_BeginScene()
 	 * is still 0), at which point the offscreen FBO is already bound
 	 * — that avoids the per-split clear of GR_SetOffscreenState and
 	 * the bind-swap hazard of clearing here. */
-	g_pgxp_split_seq = 0;
 #endif
 
 	GR_UpdateVRAM();
@@ -956,7 +957,6 @@ typedef struct
 	GLint projection3DLoc;
 	GLint bilinearFilterLoc;
 	GLint texelSizeLoc;
-	GLint pgxpZBiasLoc;   /* Day 3 — per-split Z bias for PGXP-Z mode */
 #endif
 } GTEShader;
 
@@ -971,7 +971,6 @@ GLint u_projectionLoc;
 GLint u_projection3DLoc;
 GLint u_bilinearFilterLoc;
 GLint u_texelSizeLoc;
-GLint u_pgxpZBiasLoc;
 
 #define GPU_PACK_RG\
 	"		float color_16 = (color_rg.y * 256.0 + color_rg.x) * 255.0;\n"
@@ -1087,26 +1086,8 @@ GLint u_pgxpZBiasLoc;
 		"	vec2 VRAM(vec2 uv) { return texture2D(s_texture, uv).rg; }\n"
 #endif
 
-#if USE_PGXP
-/* Day 4 Phase 2: perspective branch uses the NDC-times-w composition.
- * Ortho `clip = Projection * (px, py, z, 1)` produces (ndc.x, ndc.y, ndc.z, 1).
- * For perspective-correct UV/attribute interpolation we want gl_Position.w = w
- * with screen position preserved. Premultiply ortho clip-space xy/z by w and set
- * gl_Position.w = w; perspective divide on the GPU collapses back to the same NDC
- * coords (sub-pixel-exact) while attribute interpolation becomes hyperbolic.
- * The Day 3 per-split bias rides through unchanged because it's applied inside
- * pgxp_z before Projection. Non-canonical (ofx, ofy) emit sets scr_h = 0 in the
- * shim and stays on the ortho path, where Day 1c's vertex stability is already
- * verified. */
-#define GTE_PERSPECTIVE_CORRECTION \
-		"	float pgxp_z = u_pgxp_z_bias + a_zw.x;\n" \
-		"	vec4 ortho_clip = Projection * vec4(a_position.xy, pgxp_z, 1.0);\n" \
-		"	float w = a_zw.y;\n" \
-		"	gl_Position = (w > 0.5) ? vec4(ortho_clip.xyz * w, w) : ortho_clip;\n"
-#else
 #define GTE_PERSPECTIVE_CORRECTION \
 		"	gl_Position = Projection * vec4(a_position.xy, 0.0, 1.0);\n"
-#endif
 
 #define GTE_VERTEX_SHADER \
 	"	attribute vec4 a_position;\n"\
@@ -1116,7 +1097,6 @@ GLint u_pgxpZBiasLoc;
 	"	attribute vec4 a_zw;\n"\
 	"	uniform mat4 Projection;\n"\
 	"	uniform mat4 Projection3D;\n"\
-	"	uniform float u_pgxp_z_bias;\n"\
 	"	const vec2 c_UVFudge = vec2(0.00025, 0.00025);\n"\
 	"	void main() {\n"\
 	"		v_texcoord = a_texcoord;\n"\
@@ -1405,7 +1385,6 @@ void GR_CompilePSXShader(GTEShader* sh, const char* source)
 	sh->texelSizeLoc = glGetUniformLocation(sh->shader, "texelSize");
 #if USE_PGXP
 	sh->projection3DLoc = glGetUniformLocation(sh->shader, "Projection3D");
-	sh->pgxpZBiasLoc = glGetUniformLocation(sh->shader, "u_pgxp_z_bias");
 #endif
 #endif
 }
@@ -1723,7 +1702,6 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_4.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_4.projectionLoc;
 		u_projection3DLoc = g_gte_shader_4.projection3DLoc;
-		u_pgxpZBiasLoc = g_gte_shader_4.pgxpZBiasLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_8_BIT:
@@ -1731,7 +1709,6 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_8.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_8.projectionLoc;
 		u_projection3DLoc = g_gte_shader_8.projection3DLoc;
-		u_pgxpZBiasLoc = g_gte_shader_8.pgxpZBiasLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_16_BIT:
@@ -1739,7 +1716,6 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_16.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_16.projectionLoc;
 		u_projection3DLoc = g_gte_shader_16.projection3DLoc;
-		u_pgxpZBiasLoc = g_gte_shader_16.pgxpZBiasLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_32_BIT_RGBA:
@@ -1747,7 +1723,6 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = -1;
 		u_projectionLoc = g_gte_shader_32_rgba.projectionLoc;
 		u_projection3DLoc = g_gte_shader_32_rgba.projection3DLoc;
-		u_pgxpZBiasLoc = g_gte_shader_32_rgba.pgxpZBiasLoc;
 		u_texelSizeLoc = g_gte_shader_32_rgba.texelSizeLoc;
 		break;
 	}

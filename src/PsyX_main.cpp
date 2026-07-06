@@ -793,9 +793,7 @@ void PsyX_Sys_DoPollEvent()
 char begin_scene_flag = 0;
 
 /* Renderer-foundation Phase 1 (draw-call matcher) — finalize hook. */
-extern "C" void openpete_render_matcher_finalize_frame(void);
 /* Renderer-foundation Phase 2 (substitute) — eager dual-scan hook. */
-extern "C" void openpete_render_matcher_prepare_substitute(void);
 
 char PsyX_BeginScene()
 {
@@ -868,19 +866,6 @@ void PsyX_EndScene()
 	assert(begin_scene_flag);
 	begin_scene_flag = 0;
 
-	/* Renderer-foundation Phase 1: finalize draw-call matcher BEFORE
-	 * the cache rotates. The matcher reads cache s_prev (which holds
-	 * the world data for the OT just walked); after rotate, s_prev
-	 * becomes the freshly-emitted next-frame data and finalize would
-	 * read wrong values.
-	 *
-	 * NOTE: cache rotate (openpete_render_cache_begin_frame) is NOT
-	 * called here anymore. Phase 2.1 moved it to run.c so EndScene
-	 * can fire multiple times per sim tick (for intermediate-render
-	 * frames at --render-fps > sim) without corrupting cache state.
-	 * run.c calls openpete_render_sim_tick_advanced() once per sim
-	 * tick after the sim-due EndScene fires. */
-	openpete_render_matcher_finalize_frame();
 
 #if USE_PGXP
 	PGXP_ClearCache();
@@ -912,32 +897,13 @@ void PsyX_EndScene()
 		extern unsigned g_openpete_render_probe_count_addprim;
 		extern unsigned g_openpete_render_probe_count_addprim_grp;
 		extern unsigned g_openpete_render_probe_count_ot_walk;
-		extern unsigned g_openpete_render_probe_count_ot_pgxp_hit;
-		extern unsigned g_openpete_render_probe_count_ot_pgxp_miss;
 		/* Renderer-foundation Phase 0 counters (world-space cache). */
-		extern unsigned g_openpete_render_cache_emit_count;
-		extern unsigned g_openpete_render_cache_lookup_count;
-		extern unsigned g_openpete_render_cache_hit_count;
-		extern unsigned g_openpete_render_cache_probe_overflow_count;
-		extern unsigned g_openpete_render_cache_collide_xobj;
-		extern unsigned g_openpete_render_cache_collide_samobj;
-		extern unsigned g_openpete_render_cache_matrix_span_id;
 		/* Renderer-foundation Phase 1 (matcher) counters. */
-		extern unsigned g_openpete_render_matcher_batch_count;
-		extern unsigned g_openpete_render_matcher_matched_count;
-		extern unsigned g_openpete_render_matcher_unmatched_new_count;
-		extern unsigned g_openpete_render_matcher_unmatched_dropped_count;
-		extern unsigned g_openpete_render_matcher_no_cache_count;
-		extern unsigned g_openpete_render_matcher_future_anchored_count;
-		extern unsigned g_openpete_render_substitute_pair_count;
-		extern unsigned g_openpete_render_substitute_vert_hit_count;
-		extern unsigned g_openpete_render_substitute_vert_miss_count;
-		extern unsigned g_openpete_render_substitute_ui_optout_count;
 		extern unsigned openpete_frame;
 		if (g_openpete_render_probe_active == 1) {
 			printf("[render-probe] f%u SUMMARY rtps=%u rtpt=%u mvmva=%u other=%u "
 			       "matrix-changes=%u addPrim_fn=%u addPrims_fn=%u "
-			       "ot_walked=%u pgxp_hit=%u pgxp_miss=%u "
+			       "ot_walked=%u "
 			       "(verts=%u, prims_per_matrix_batch=%.1f)\n",
 			       openpete_frame,
 			       g_openpete_render_probe_count_rtps,
@@ -948,60 +914,10 @@ void PsyX_EndScene()
 			       g_openpete_render_probe_count_addprim,
 			       g_openpete_render_probe_count_addprim_grp,
 			       g_openpete_render_probe_count_ot_walk,
-			       g_openpete_render_probe_count_ot_pgxp_hit,
-			       g_openpete_render_probe_count_ot_pgxp_miss,
 			       g_openpete_render_probe_count_rtps + 3 * g_openpete_render_probe_count_rtpt,
 			       g_openpete_render_probe_count_matrix_changes
 			           ? (double)g_openpete_render_probe_count_addprim /
 			             (double)g_openpete_render_probe_count_matrix_changes
-			           : 0.0);
-			printf("[render-probe] f%u CACHE emit=%u lookup=%u hit=%u "
-			       "(hit_rate=%.1f%%) probe_overflow=%u spans=%u "
-			       "collide_xobj=%u sam=%u\n",
-			       openpete_frame,
-			       g_openpete_render_cache_emit_count,
-			       g_openpete_render_cache_lookup_count,
-			       g_openpete_render_cache_hit_count,
-			       g_openpete_render_cache_lookup_count
-			           ? 100.0 * (double)g_openpete_render_cache_hit_count /
-			             (double)g_openpete_render_cache_lookup_count
-			           : 0.0,
-			       g_openpete_render_cache_probe_overflow_count,
-			       g_openpete_render_cache_matrix_span_id,
-			       g_openpete_render_cache_collide_xobj,
-			       g_openpete_render_cache_collide_samobj);
-			unsigned m_total = g_openpete_render_matcher_matched_count +
-			                   g_openpete_render_matcher_unmatched_new_count;
-			printf("[render-probe] f%u MATCH batches=%u matched=%u new=%u "
-			       "dropped=%u no_cache=%u future_anchored=%u "
-			       "(match_rate=%.1f%% future_anchor_rate=%.1f%%)\n",
-			       openpete_frame,
-			       g_openpete_render_matcher_batch_count,
-			       g_openpete_render_matcher_matched_count,
-			       g_openpete_render_matcher_unmatched_new_count,
-			       g_openpete_render_matcher_unmatched_dropped_count,
-			       g_openpete_render_matcher_no_cache_count,
-			       g_openpete_render_matcher_future_anchored_count,
-			       m_total
-			           ? 100.0 * (double)g_openpete_render_matcher_matched_count /
-			             (double)m_total
-			           : 0.0,
-			       g_openpete_render_matcher_batch_count
-			           ? 100.0 * (double)g_openpete_render_matcher_future_anchored_count /
-			             (double)g_openpete_render_matcher_batch_count
-			           : 0.0);
-			unsigned sub_total = g_openpete_render_substitute_vert_hit_count +
-			                     g_openpete_render_substitute_vert_miss_count;
-			printf("[render-probe] f%u SUBST pairs=%u vert_hit=%u vert_miss=%u "
-			       "ui_optout=%u (vert_hit_rate=%.1f%%)\n",
-			       openpete_frame,
-			       g_openpete_render_substitute_pair_count,
-			       g_openpete_render_substitute_vert_hit_count,
-			       g_openpete_render_substitute_vert_miss_count,
-			       g_openpete_render_substitute_ui_optout_count,
-			       sub_total
-			           ? 100.0 * (double)g_openpete_render_substitute_vert_hit_count /
-			             (double)sub_total
 			           : 0.0);
 			fflush(stdout);
 			g_openpete_render_probe_count_rtps  = 0;
@@ -1012,15 +928,6 @@ void PsyX_EndScene()
 			g_openpete_render_probe_count_addprim     = 0;
 			g_openpete_render_probe_count_addprim_grp = 0;
 			g_openpete_render_probe_count_ot_walk     = 0;
-			g_openpete_render_probe_count_ot_pgxp_hit = 0;
-			g_openpete_render_probe_count_ot_pgxp_miss = 0;
-			g_openpete_render_cache_emit_count            = 0;
-			g_openpete_render_cache_lookup_count          = 0;
-			g_openpete_render_cache_hit_count             = 0;
-			g_openpete_render_cache_probe_overflow_count  = 0;
-			g_openpete_render_cache_collide_xobj          = 0;
-			g_openpete_render_cache_collide_samobj       = 0;
-			/* matrix_span_id is monotonic across the run (not per-frame). */
 		}
 	}
 }
@@ -1134,12 +1041,6 @@ void PsyX_Sys_DoDebugKeys(int nKey, char down)
 				g_activeKeyboardControllers++;
 
 			eprintwarn("Active keyboard controller: %d\n", g_activeKeyboardControllers);
-			break;
-		case SDL_SCANCODE_F5:
-			g_cfg_pgxpTextureCorrection ^= 1;
-			break;
-		case SDL_SCANCODE_F6:
-			g_cfg_pgxpZBuffer ^= 1;
 			break;
 		}
 	}

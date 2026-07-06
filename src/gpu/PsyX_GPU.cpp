@@ -188,239 +188,12 @@ void MakeLineArray(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, ushort gteidx)
 	ScreenCoordsToEmulator(vertex, 4);
 }
 
-/* Renderer-foundation Phase 0/1 bridges into openpete_core.
- *
- *  Phase 0 (probe): per-vertex SXY lookup in the cache populated by
- *    psxrecomp's gte_rtps_internal. Counter-only — verifies hit rate.
- *
- *  Phase 1 (matcher): per-prim observe hooks group prims by
- *    matrix_span_id and match against the previous frame's batches.
- *    Phase 1 produces stats only; no render changes.
- *
- *  Forward-declared (extern "C") so we don't drag openpete headers
- *  through PsyX's include surface. */
+/* openpete render-probe master switch (OPENPETE_RENDER_PROBE=1);
+ * defined in psxrecomp's gte.cpp. (The render-cache/matcher/PGXP
+ * bridges that used to live here were deleted 2026-07-06 with the
+ * openpete screen-space interpolation + PGXP stacks.) */
 extern "C" {
     extern int g_openpete_render_probe_active;
-    int  openpete_render_cache_lookup_curr_raw(uint32_t sxy_key);
-    /* PGXP shim — see openpete_render_cache.h and openpete-pgxp.md.
-     * Forward-decl avoids dragging the full openpete_render_cache.h
-     * (and its iterator API) through the PsyX include surface. */
-    typedef struct openpete_pgxp_lookup {
-        float px, py, pz;
-        float ofx, ofy;
-        float scr_h;
-    } openpete_pgxp_lookup_t;
-    int  openpete_render_cache_lookup_pgxp(uint32_t sxy_key,
-                                           openpete_pgxp_lookup_t* out);
-    void openpete_render_matcher_observe_tri(const int16_t* p0,
-                                             const int16_t* p1,
-                                             const int16_t* p2);
-    void openpete_render_matcher_observe_quad(const int16_t* p0,
-                                              const int16_t* p1,
-                                              const int16_t* p2,
-                                              const int16_t* p3);
-    typedef struct { float dx; float dy; } openpete_substitute_delta_t;
-    openpete_substitute_delta_t openpete_render_matcher_substitute_query(
-        const int16_t* p, float alpha);
-    /* PGXP-aware variant: pgxp_base=1 ⇒ this vertex's GL base was
-     * float-positioned by ApplyVertexPGXP, so the matcher returns a
-     * float-endpoint delta (sub-pixel consistent) instead of an
-     * int16-endpoint one. See openpete_render_matcher.h. */
-    openpete_substitute_delta_t openpete_render_matcher_substitute_query_px(
-        const int16_t* p, float alpha, int pgxp_base);
-    int openpete_render_matcher_is_smoothed(const int16_t* p);
-    /* Overlay v2 state classifier — values mirror the OPENPETE_DBGST_*
-     * enum in openpete_render_matcher.h (0 none, 1 tag-absent,
-     * 2 tag-insane, 3 corr-frozen, 4 heur-paired, 5 legacy-world,
-     * 6 vert-miss, 7 abs-follow). */
-    int openpete_render_matcher_debug_state(const int16_t* p);
-    extern int g_openpete_dbg_highlight_smoothed;
-    int64_t op_now(void);
-    float   openpete_render_compute_alpha(int64_t now_ns);
-}
-
-/* Phase 2.1 alpha source.
- *
- * OPENPETE_LERP_ALPHA env var (>= 0) takes precedence — useful for
- * testing fixed-alpha visuals. Otherwise we call
- * openpete_render_compute_alpha(op_now()) which returns (now -
- * last_sim_tick) / sim_period clamped to [0, 1]. At sim-due renders
- * alpha ≈ 0; at intermediate renders (run.c re-issues the OT walk
- * between sim ticks at higher render-fps) alpha advances through 0→1
- * across the sim period, producing smooth motion. */
-static float g_openpete_lerp_alpha_env = -2.0f;  /* -2 = unread, -1 = unset, 0+ = forced */
-extern "C" float g_openpete_substitute_alpha_snapshot;
-static inline float openpete_get_lerp_alpha() {
-    if (g_openpete_lerp_alpha_env < -1.5f) {
-        const char* e = std::getenv("OPENPETE_LERP_ALPHA");
-        g_openpete_lerp_alpha_env = e ? (float)atof(e) : -1.0f;
-    }
-    if (g_openpete_lerp_alpha_env >= 0.0f) return g_openpete_lerp_alpha_env;
-    /* Phase 2.1 hotfix — read the snapshot pinned at OT-walk start by
-     * either mark_now (sim-due → 0) or snapshot_intermediate (re-emit
-     * → compute_alpha at that moment). Avoids per-vertex op_now() drift
-     * across a multi-ms OT walk. */
-    return g_openpete_substitute_alpha_snapshot;
-}
-/* Debug render mode: OPENPETE_DEBUG_HIGHLIGHT_SMOOTHED=1 paints every
- * batch the interpolation is actively smoothing as untextured solid
- * red, leaving everything else (frozen / animated / UI) normal. Lets
- * you SEE the rigid/animated classification the harness can't show.
- *
- * Per-prim flow (single-threaded, strict order Vertex→Texcoord→Colour):
- * MakeVertex* sets s_dbg_prim_red from the matcher predicate; the
- * Colour stage (always last → overrides stick) consumes it, forcing
- * red and zeroing page/uv so the GL path renders flat untextured. */
-/* Overlay v2 (§12.2) — state-colored: every snap/fallback cause has
- * its own hue, so an on-screen artifact names its mechanism on sight:
- *   GREEN   healthy — prim actually interpolated this render
- *           (>=1 px applied delta on some vertex)
- *   RED     tag-absent freeze (despawned moby / strip culled out)
- *   YELLOW  tagged_pair_sane reject (world count-shift / moby
- *           teleport-shape guard) — frozen this frame
- *   ORANGE  corr-gate whole-batch freeze (animating mesh / partial
- *           strip correspondence)
- *   MAGENTA centroid-hash heuristic pairing (untagged renderers only:
- *           particles / flames / shadows — §12.1 deletion targets)
- *   BLUE    legacy obj_tag==0 world (§7.3 composite-reproject path)
- *   CYAN    batch paired but vertex tomap-missed (animated v_local
- *           churn / culled-in vert) — vertex frozen
- *   WHITE   tag-absent world batch riding a borrowed neighbor rigid
- *           mean (§13.14 absent-follow — one-frame cull transient)
- * Problem states win over green; the numerically highest state across
- * the prim's verts is shown. Uncolored = static or UI. */
-static int  s_dbg_prim_state = 0;
-static bool s_dbg_prim_moved = false;
-static inline bool openpete_dbg_hl_on() {
-	/* Live global (CLI/env-seeded in run.c, F9-toggled). Not a
-	 * getenv() — bare env vars don't cross the WSL2→Win32 boundary
-	 * into the .exe, but a real symbol does. */
-	return g_openpete_dbg_highlight_smoothed != 0;
-}
-static inline void openpete_dbg_mark_prim(const VERTTYPE* a, const VERTTYPE* b,
-                                          const VERTTYPE* c, const VERTTYPE* d) {
-	/* Do NOT reset s_dbg_prim_moved here: mark_prim runs AFTER the
-	 * substitute block (note_applied already set it for this prim).
-	 * apply_color resets both when it consumes them, so no stale carry. */
-	s_dbg_prim_state = 0;
-	if (!openpete_dbg_hl_on()) return;
-	int st = openpete_render_matcher_debug_state(a);
-	int t;
-	t = openpete_render_matcher_debug_state(b); if (t > st) st = t;
-	t = openpete_render_matcher_debug_state(c); if (t > st) st = t;
-	if (d) { t = openpete_render_matcher_debug_state(d); if (t > st) st = t; }
-	s_dbg_prim_state = st;
-}
-/* Called from the substitute apply block with the just-computed
- * per-vertex deltas; flags the prim as actually-moved (green). */
-static inline void openpete_dbg_note_applied(float adx, float ady) {
-	if (!openpete_dbg_hl_on()) return;
-	if (adx < 0) adx = -adx;
-	if (ady < 0) ady = -ady;
-	if (adx + ady >= 1.0f) s_dbg_prim_moved = true;
-}
-/* Consumed by every MakeColour* path. Returns true if it recoloured. */
-static inline bool openpete_dbg_apply_color(GrVertex* v, int n) {
-	const int  st    = s_dbg_prim_state;
-	const bool moved = s_dbg_prim_moved;
-	s_dbg_prim_state = 0;
-	s_dbg_prim_moved = false;
-	if (st == 0 && !moved) return false;
-	/* Index = OPENPETE_DBGST_* value; slot 0 = healthy-moved green. */
-	static const unsigned char k_rgb[8][3] = {
-		{   0, 200,   0 },  /* 0 moved        green   */
-		{ 255,   0,   0 },  /* 1 tag-absent   red     */
-		{ 255, 255,   0 },  /* 2 tag-insane   yellow  */
-		{ 255, 128,   0 },  /* 3 corr-frozen  orange  */
-		{ 255,   0, 255 },  /* 4 heur-paired  magenta */
-		{   0,  64, 255 },  /* 5 legacy-world blue    */
-		{   0, 255, 255 },  /* 6 vert-miss    cyan    */
-		{ 255, 255, 255 },  /* 7 abs-follow   white   */
-	};
-	const unsigned char* rgb = k_rgb[(st > 0 && st <= 7) ? st : 0];
-	for (int i = 0; i < n; ++i) {
-		/* TINT, don't repaint: keep page/clut/uv so the prim renders
-		 * through its normal (textured or not) path with the state
-		 * color modulated in. The v1 overlay forced page=0/uv=0 to go
-		 * flat-untextured, but that path isn't honored by every
-		 * split — Spyro's prims sampled texel (0,0) of their still-
-		 * bound page and alpha-tested away entirely ("Spyro is
-		 * totally invisible with F9"). Tinting can never lose
-		 * geometry; dark textures just show a darker hue. */
-		v[i].r = rgb[0]; v[i].g = rgb[1]; v[i].b = rgb[2]; v[i].a = 255;
-	}
-	return true;
-}
-static inline void RenderCacheProbeVertex(const VERTTYPE* p) {
-    if (g_openpete_render_probe_active != 1) return;
-    const uint32_t key =
-        ((uint32_t)(uint16_t)(int16_t)p[0]) |
-        (((uint32_t)(uint16_t)(int16_t)p[1]) << 16);
-    (void)openpete_render_cache_lookup_curr_raw(key);
-}
-
-/* Returns 1 iff the vertex position was replaced with the cache's
- * float sub-pixel projection — the caller passes this into the
- * substitute query so interp deltas stay in the same (float vs int16)
- * coordinate model as the base they're added to. */
-inline int ApplyVertexPGXP(GrVertex* v, VERTTYPE* p, float ofsX, float ofsY, ushort gteidx, int lookupOfs)
-{
-#if USE_PGXP
-	/* openpete: PGXP precision sourced from the renderer-foundation
-	 * world-space cache (populated by psxrecomp's gte_execute). The
-	 * cache shim float-projects SXY directly in PSX pixel space; the
-	 * int16-derived v->x/y get overwritten with sub-pixel-precision
-	 * floats in the same coord space. We leave scr_h = 0 so the
-	 * shader takes its ortho fallback branch — mathematically
-	 * identical to the integer route, just with float precision
-	 * preserved end-to-end.
-	 *
-	 * The upstream PsyCross PGXP perspective shader branch is left
-	 * un-engaged for now (it expects a different coord-space + scale
-	 * relationship between px/scr_h that was tuned for a non-Spyro
-	 * game — see openpete-pgxp.md Day 1b). PGXP-Z-buffer mode and
-	 * texture correction will require re-engaging that branch with
-	 * calibration work; out of scope for this pass.
-	 *
-	 * gteidx / lookupOfs are vestigial under the SXY-keyed lookup. */
-	(void)gteidx; (void)lookupOfs;
-
-	if (g_cfg_pgxpTextureCorrection)
-	{
-		const uint32_t sxy_key =
-			((uint32_t)(uint16_t)(int16_t)p[0]) |
-			(((uint32_t)(uint16_t)(int16_t)p[1]) << 16);
-
-		openpete_pgxp_lookup_t vd;
-		if (openpete_render_cache_lookup_pgxp(sxy_key, &vd))
-		{
-			/* vd.px/py are already in PSX pixel space — same coord
-			 * space the int16 path produced via `p[i] + ofsX`. The
-			 * int16 v->x/y assignment in the caller is overwritten
-			 * with the float-precision projection. */
-			v->x = vd.px + ofsX;
-			v->y = vd.py + ofsY;
-			/* Day 4 Phase 2: shim sets scr_h>0 for the canonical 3D
-			 * world-projection context, else 0 (HUD/text glyph emit
-			 * → ortho fallback). Pass through; the shader's
-			 * `a_zw.y > 0.5` branch consumes it for perspective-
-			 * correct UV interpolation. */
-			v->scr_h = vd.scr_h;
-			/* Day 3: small Z perturbation from cached real Z; the
-			 * per-split u_pgxp_z_bias uniform dominates so OT order
-			 * is preserved between batches. */
-			v->z = vd.pz;
-			return 1;
-		}
-	}
-
-	/* Cache miss: zero perturbation. v->z = 0 means this vertex's
-	 * Z = u_pgxp_z_bias (its batch's slot center), which sorts
-	 * correctly between batches by draw order. */
-	v->scr_h = 0.0f;
-	v->z = 0.0f;
-#endif
-	return 0;
 }
 
 void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, ushort gteidx)
@@ -442,48 +215,6 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 
 	vertex[2].x = p2[0] + ofsX;
 	vertex[2].y = p2[1] + ofsY;
-
-	const int pg0 = ApplyVertexPGXP(&vertex[0], p0, ofsX, ofsY, gteidx, -2);
-	const int pg1 = ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -1);
-	const int pg2 = ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, 0);
-
-#if USE_PGXP
-	/* Day 4 Phase 2: prim-level perspective coherence. The cache-lookup
-	 * hit rate is < 100% — partial-miss prims would put one vertex on
-	 * the perspective branch (gl_Position.w = scr_h, gigantic) and the
-	 * rest on ortho (gl_Position.w = 1, tiny), and the GPU interpolates
-	 * between them through infinity. Demote any partial-hit prim to
-	 * pure ortho. Only all-hit prims keep perspective. */
-	if (vertex[0].scr_h <= 0.0f || vertex[1].scr_h <= 0.0f || vertex[2].scr_h <= 0.0f) {
-		vertex[0].scr_h = 0.0f;
-		vertex[1].scr_h = 0.0f;
-		vertex[2].scr_h = 0.0f;
-	}
-#endif
-
-	RenderCacheProbeVertex(p0);
-	RenderCacheProbeVertex(p1);
-	RenderCacheProbeVertex(p2);
-	openpete_render_matcher_observe_tri(p0, p1, p2);
-
-	/* Phase 2.0 substitute: per-vertex screen-space delta. Applied to
-	 * the GL vertex buffer entry (NOT the prim packet) so subsequent
-	 * cache lookups still use original SXY keys. */
-	{
-		const float a = openpete_get_lerp_alpha();
-		if (a > 0.0f) {
-			openpete_substitute_delta_t d0 = openpete_render_matcher_substitute_query_px(p0, a, pg0);
-			openpete_substitute_delta_t d1 = openpete_render_matcher_substitute_query_px(p1, a, pg1);
-			openpete_substitute_delta_t d2 = openpete_render_matcher_substitute_query_px(p2, a, pg2);
-			vertex[0].x += d0.dx; vertex[0].y += d0.dy;
-			vertex[1].x += d1.dx; vertex[1].y += d1.dy;
-			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
-			openpete_dbg_note_applied(d0.dx, d0.dy);
-			openpete_dbg_note_applied(d1.dx, d1.dy);
-			openpete_dbg_note_applied(d2.dx, d2.dy);
-		}
-	}
-	openpete_dbg_mark_prim(p0, p1, p2, nullptr);
 
 	ScreenCoordsToEmulator(vertex, 3);
 }
@@ -511,48 +242,6 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 
 	vertex[3].x = p3[0] + ofsX;
 	vertex[3].y = p3[1] + ofsY;
-
-	const int pg0 = ApplyVertexPGXP(&vertex[0], p0, ofsX, ofsY, gteidx, -3);
-	const int pg1 = ApplyVertexPGXP(&vertex[1], p1, ofsX, ofsY, gteidx, -2);
-	const int pg2 = ApplyVertexPGXP(&vertex[2], p2, ofsX, ofsY, gteidx, -1);
-	const int pg3 = ApplyVertexPGXP(&vertex[3], p3, ofsX, ofsY, gteidx, 0);
-
-#if USE_PGXP
-	/* Day 4 Phase 2: prim-level perspective coherence (see MakeVertexTriangle). */
-	if (vertex[0].scr_h <= 0.0f || vertex[1].scr_h <= 0.0f ||
-	    vertex[2].scr_h <= 0.0f || vertex[3].scr_h <= 0.0f) {
-		vertex[0].scr_h = 0.0f;
-		vertex[1].scr_h = 0.0f;
-		vertex[2].scr_h = 0.0f;
-		vertex[3].scr_h = 0.0f;
-	}
-#endif
-
-	RenderCacheProbeVertex(p0);
-	RenderCacheProbeVertex(p1);
-	RenderCacheProbeVertex(p2);
-	RenderCacheProbeVertex(p3);
-	openpete_render_matcher_observe_quad(p0, p1, p2, p3);
-
-	/* Phase 2.0 substitute (see MakeVertexTriangle for rationale). */
-	{
-		const float a = openpete_get_lerp_alpha();
-		if (a > 0.0f) {
-			openpete_substitute_delta_t d0 = openpete_render_matcher_substitute_query_px(p0, a, pg0);
-			openpete_substitute_delta_t d1 = openpete_render_matcher_substitute_query_px(p1, a, pg1);
-			openpete_substitute_delta_t d2 = openpete_render_matcher_substitute_query_px(p2, a, pg2);
-			openpete_substitute_delta_t d3 = openpete_render_matcher_substitute_query_px(p3, a, pg3);
-			vertex[0].x += d0.dx; vertex[0].y += d0.dy;
-			vertex[1].x += d1.dx; vertex[1].y += d1.dy;
-			vertex[2].x += d2.dx; vertex[2].y += d2.dy;
-			vertex[3].x += d3.dx; vertex[3].y += d3.dy;
-			openpete_dbg_note_applied(d0.dx, d0.dy);
-			openpete_dbg_note_applied(d1.dx, d1.dy);
-			openpete_dbg_note_applied(d2.dx, d2.dy);
-			openpete_dbg_note_applied(d3.dx, d3.dy);
-		}
-	}
-	openpete_dbg_mark_prim(p0, p1, p2, p3);
 
 	ScreenCoordsToEmulator(vertex, 4);
 }
@@ -832,7 +521,6 @@ void MakeTexcoordQuadZero(GrVertex* vertex, unsigned char dither)
 
 void MakeColourNoShade(GrVertex* vertex, int n)
 {
-	if (openpete_dbg_apply_color(vertex, n)) return;
 	--n;
 	while (n >= 0)
 	{
@@ -902,7 +590,6 @@ void MakeColourTriangle(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, 
 	vertex[2].b = col2[2];
 	vertex[2].a = 255;
 
-	openpete_dbg_apply_color(vertex, 3);
 }
 
 void MakeColourQuad(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, unsigned char* col1, unsigned char* col2, unsigned char* col3)
@@ -938,7 +625,6 @@ void MakeColourQuad(GrVertex* vertex, bool shadeTexOn, unsigned char* col0, unsi
 	vertex[3].b = col3[2];
 	vertex[3].a = 255;
 
-	openpete_dbg_apply_color(vertex, 4);
 }
 
 void TriangulateQuad()
@@ -1018,9 +704,6 @@ static void AddSplit(bool semiTrans, bool textured)
 	split.numVerts = 0;
 }
 
-extern unsigned int g_pgxp_split_seq;
-extern GLint u_pgxpZBiasLoc;
-
 void DrawSplit(const GPUDrawSplit& split)
 {
 	if(split.debugText)
@@ -1038,30 +721,6 @@ void DrawSplit(const GPUDrawSplit& split)
 	GR_SetOffscreenState(&split.drawenv.clip, !drawOnScreen);
 
 	GR_SetBlendMode(split.blendMode);
-
-	/* Day 3 PGXP-Z-buffer: on the first split of each frame, the
-	 * offscreen FBO is now bound (via GR_SetOffscreenState above),
-	 * so it's safe to clear depth here without bind-swap hazards. */
-	if (g_pgxp_split_seq == 0) {
-		glClearDepth(1.0f);
-		glClear(GL_DEPTH_BUFFER_BIT);
-	}
-
-	/* Per-split Z bias for PGXP-Z mode. Spyro draws OT back-to-front,
-	 * so later splits (higher seq) should win LEQUAL. GR_Ortho2D
-	 * INVERTS Z in its projection matrix (ortho_matrix[10] = -1 for
-	 * znear=-1/zfar=+1), so pre-projection z=+1 maps to NDC z=-1
-	 * (near plane), and pre-projection z=-1 maps to NDC z=+1 (far).
-	 * Therefore later splits need LARGER pre-projection z. Range
-	 * [-0.95, +0.95]; per-split slot ≈ 2/MAX_DRAW_SPLITS ≈ 0.0005;
-	 * intra-batch perturbation is 0 (preserves OT/triangle order
-	 * within a draw call — see openpete-pgxp.md Day 3). */
-	if (u_pgxpZBiasLoc >= 0) {
-		const float kMax = (float)MAX_DRAW_SPLITS;
-		const float bias = ((float)g_pgxp_split_seq / kMax) * 1.9f - 0.95f;
-		glUniform1f(u_pgxpZBiasLoc, bias);
-	}
-	g_pgxp_split_seq++;
 
 	GR_DrawTriangles(split.startVertex, split.numVerts / 3);
 
@@ -1862,8 +1521,6 @@ extern "C" {
 	extern int      g_openpete_render_probe_active;
 }
 extern "C" unsigned g_openpete_render_probe_count_ot_walk  = 0u;
-extern "C" unsigned g_openpete_render_probe_count_ot_pgxp_hit = 0u;
-extern "C" unsigned g_openpete_render_probe_count_ot_pgxp_miss = 0u;
 
 // returns processed primitive primLength in longs
 int ParsePrimitive(P_TAG* polyTag)
@@ -1878,8 +1535,6 @@ int ParsePrimitive(P_TAG* polyTag)
 	if (g_openpete_render_probe_active == 1) {
 		g_openpete_render_probe_count_ot_walk++;
 #if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
-		if (polyTag->pgxp_index != 0xFFFF) g_openpete_render_probe_count_ot_pgxp_hit++;
-		else                               g_openpete_render_probe_count_ot_pgxp_miss++;
 #endif
 	}
 

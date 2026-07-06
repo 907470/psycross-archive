@@ -19,7 +19,6 @@
 #include "../PsyX_main.h"
 #include "../gpu/font.h"
 
-extern "C" void openpete_render_matcher_prepare_substitute(void);
 
 int g_dbg_emulatorPaused = 0;
 
@@ -448,14 +447,6 @@ void DrawOTag(u_long* p)
 
 		//if (activeDrawEnv.isbg)
 		//	ClearImage(&activeDrawEnv.clip, activeDrawEnv.r0, activeDrawEnv.g0, activeDrawEnv.b0);
-
-		/* Renderer-foundation Phase 2: eager dual-scan right before the
-		 * OT walk. cache.s_prev holds the world data for prims about to
-		 * be walked; cache.s_curr holds the in-flight next-frame emits.
-		 * MUST run here (not at PsyX_BeginScene) because BeginScene
-		 * fires early in the frame (clear / drawenv setup) before the
-		 * game fiber has done its GTE pass, leaving s_curr empty. */
-		openpete_render_matcher_prepare_substitute();
 
 		ParsePrimitivesLinkedList(p, 0);
 
