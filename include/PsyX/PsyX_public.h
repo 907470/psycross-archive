@@ -104,6 +104,19 @@ extern float g_psyx_render_aspect_factor;
  * PsyX_SPUAL_CaptureDrain returns 0. */
 extern int g_psyx_audioCaptureMode;
 
+/* Null-GPU mode. When non-zero BEFORE PsyX_Initialise, PsyCross runs as a
+ * LIBRARY only: SDL + core (vblank/intr thread) + input + SPU + CDFS come up,
+ * but no window, no GL context, and no PSX GPU state are created
+ * (GR_InitialiseRender / GR_InitialisePSX skipped), and every GL-touching GR
+ * entry point reachable from the libgpu thunks (GR_Clear / GR_UpdateVRAM /
+ * GR_ReadFramebufferDataToVRAM / GR_SwapWindow / PsyX_BeginScene) early-
+ * returns. The CPU-side `vram` array and its LoadImage/MoveImage/StoreImage
+ * semantics stay fully live, so game readbacks behave exactly as before.
+ * Set by openpete when the native Vulkan renderer is the sole display
+ * (--renderer vk); PsyCross's own renderer remains fully functional for
+ * psycross/ab/diff modes when the flag is 0. */
+extern int g_psyx_null_gpu;
+
 /* Pad input override (--bk2 replay). When g_PsyX_Pad_OverrideActive != 0,
  * PsyX_Pad_InternalPadUpdates uses these button bits verbatim (same convention
  * as PsyX_Pad_UpdateKeyboardInput: released set, pressed cleared) instead of

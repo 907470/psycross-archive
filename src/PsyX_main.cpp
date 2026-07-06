@@ -80,6 +80,12 @@ enum EPsxCounters
 volatile int g_psxSysCounters[PsxCounter_Num];
 
 SDL_Thread* g_intrThread = NULL;
+
+/* Null-GPU mode — see PsyX_public.h. Set by the host before PsyX_Initialise. */
+int g_psyx_null_gpu = 0;
+/* Core-up latch: PsyX_Shutdown used to key on g_window, but in null-GPU mode
+ * no window exists while the intr thread / SPU / SDL still need teardown. */
+static int g_psyx_core_up = 0;
 SDL_Mutex* g_intrMutex = NULL;
 volatile char g_stopIntrThread = 0;
 
@@ -651,8 +657,16 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen, int s
 		PsyX_Shutdown();
 		return;
 	}
-	
-	if (!GR_InitialiseRender(windowNameStr, width, height, fullscreen, startHidden))
+	g_psyx_core_up = 1;
+
+	if (g_psyx_null_gpu)
+	{
+		/* Library-only mode: no window, no GL, no PSX GPU state. The CPU-side
+		 * vram array + libgpu thunk semantics stay live; every GL-touching GR
+		 * entry point early-returns on the flag. */
+		eprintinfo("Psy-X null-GPU mode: window/GL/PSX-GPU init skipped\n");
+	}
+	else if (!GR_InitialiseRender(windowNameStr, width, height, fullscreen, startHidden))
 	{
 		eprinterr("Failed to Intialise Window\n");
 		PsyX_Shutdown();
@@ -666,7 +680,7 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen, int s
 		return;
 	}
 
-	if (!GR_InitialisePSX())
+	if (!g_psyx_null_gpu && !GR_InitialisePSX())
 	{
 		eprinterr("Failed to Intialise PSX.\n");
 		PsyX_Shutdown();
@@ -679,7 +693,8 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen, int s
 	atexit(PsyX_Shutdown);
 
 	// disable cursor visibility
-	SDL_HideCursor();
+	if (!g_psyx_null_gpu)
+		SDL_HideCursor();
 }
 
 void PsyX_GetScreenSize(int* screenWidth, int* screenHeight)
@@ -784,6 +799,9 @@ extern "C" void openpete_render_matcher_prepare_substitute(void);
 
 char PsyX_BeginScene()
 {
+	if (g_psyx_null_gpu)
+		return 0;   /* library-only: no GL scene ever begins */
+
 	PsyX_Sys_DoPollEvent();
 
 	if (begin_scene_flag)
@@ -1199,8 +1217,9 @@ void PsyX_Exit()
 
 void PsyX_Shutdown()
 {
-	if (!g_window)
+	if (!g_psyx_core_up)
 		return;
+	g_psyx_core_up = 0;
 
 	// quit vblank thread
 	if (g_intrThread)
@@ -1213,10 +1232,14 @@ void PsyX_Shutdown()
 		SDL_DestroyMutex(g_intrMutex);
 	}
 
-	SDL_DestroyWindow(g_window);
-	g_window = NULL;
+	if (g_window)
+	{
+		SDL_DestroyWindow(g_window);
+		g_window = NULL;
+	}
 
-	GR_Shutdown();
+	if (!g_psyx_null_gpu)
+		GR_Shutdown();
 	SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
 
 	// Tear down audio before SDL_Quit so OpenAL's PulseAudio backend gets a

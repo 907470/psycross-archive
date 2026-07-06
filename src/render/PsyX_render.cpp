@@ -639,6 +639,8 @@ static int GR_GetPresentSceneCrop(int* out_x, int* out_y, int* out_w, int* out_h
 extern "C" int GR_GetPresentSceneSize(int* out_w, int* out_h)
 {
 	int x, y, w, h;
+	if (g_psyx_null_gpu)
+		return 0;   /* library-only: no present FBO exists */
 	if (!GR_GetPresentSceneCrop(&x, &y, &w, &h) || w <= 0 || h <= 0)
 		return 0;
 	if (out_w) *out_w = w;
@@ -650,6 +652,8 @@ extern "C" int GR_ReadPresentSceneRGBA(unsigned char* pixels, int w, int h, unsi
 {
 #if USE_OPENGL
 	int x, y, cw, ch;
+	if (g_psyx_null_gpu)
+		return 0;   /* library-only: no GL context */
 	if (!pixels || !GR_GetPresentSceneCrop(&x, &y, &cw, &ch) || cw != w || ch != h || w <= 0 || h <= 0)
 		return 0;
 	/* The scene leaves GL_SCISSOR_TEST enabled with a rect sized for the
@@ -775,6 +779,8 @@ extern "C" void GR_PresentCroppedToWindow()
 {
 #if USE_OPENGL
 	int src_y_top, src_w, src_crop_h;
+	if (g_psyx_null_gpu)
+		return;   /* library-only: no GL context */
 	if (!GR_GetPresentSceneCrop(NULL, &src_y_top, &src_w, &src_crop_h))
 		return;
 	int src_y_bottom = src_y_top + src_crop_h;
@@ -1815,6 +1821,9 @@ void GR_ClearVRAM(int x, int y, int w, int h, unsigned char r, unsigned char g, 
 
 void GR_Clear(int x, int y, int w, int h, unsigned char r, unsigned char g, unsigned char b)
 {
+	if (g_psyx_null_gpu)
+		return;
+
 	framebuffer_need_update = 1;
 
 #if USE_OPENGL
@@ -1919,7 +1928,7 @@ void GR_CopyRGBAFramebufferToVRAM(u_int* src, int x, int y, int w, int h, int up
 void GR_ReadFramebufferDataToVRAM()
 {
 	int x, y, w, h;
-	if (!framebuffer_need_update)
+	if (g_psyx_null_gpu || !framebuffer_need_update)
 		return;
 
 	framebuffer_need_update = 0;
@@ -2215,7 +2224,7 @@ void GR_ReadVRAM(unsigned short* dst, int x, int y, int dst_w, int dst_h)
 
 void GR_UpdateVRAM()
 {
-	if (!vram_need_update)
+	if (g_psyx_null_gpu || !vram_need_update)
 		return;
 
 	vram_need_update = 0;
@@ -2238,6 +2247,8 @@ void GR_UpdateVRAM()
 
 void GR_SwapWindow()
 {
+	if (g_psyx_null_gpu)
+		return;
 #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
 	SDL_GL_SwapWindow(g_window);
 #endif
