@@ -406,6 +406,15 @@ FILE* g_logStream = NULL;
 // intialise logging
 void PsyX_Log_Initialise()
 {
+	/* openpete: the log file is opt-in. PsyCross otherwise drops a
+	 * "<appname>.log" (e.g. "Spyro the Dragon.log") in the working
+	 * directory on every launch; the host doesn't need it and it clutters
+	 * the cwd. Set OPENPETE_PSYX_LOG=1 to get it back for debugging.
+	 * Console (stdout) logging is unaffected — PrintMessageToOutput() only
+	 * writes the file when g_logStream != NULL. */
+	if (!getenv("OPENPETE_PSYX_LOG"))
+		return;
+
 	char appLogFilename[128];
 	sprintf(appLogFilename, "%s.log", g_appNameStr);
 
