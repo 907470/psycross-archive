@@ -64,6 +64,39 @@ extern "C" void PsyX_Pad_GetLastP1Analog(unsigned char out_axes[4])
 	out_axes[3] = pad->analog[3];
 }
 
+/* See PsyX_public.h. Raw P1 pad for host UI, read straight from SDL so it's
+ * unaffected by g_PsyX_Pad_InputOverride (which the settings menu holds neutral
+ * while it owns input). Uses the first connected controller slot. */
+extern "C" int PsyX_Pad_GetRawP1(PsyX_RawPad* out)
+{
+	if (!out)
+		return 0;
+	memset(out, 0, sizeof(*out));
+
+	SDL_Gamepad* gc = NULL;
+	for (int i = 0; i < MAX_CONTROLLERS; i++)
+	{
+		if (g_controllers[i].gc && SDL_GamepadConnected(g_controllers[i].gc))
+		{
+			gc = g_controllers[i].gc;
+			break;
+		}
+	}
+	if (!gc)
+		return 0;
+
+	out->dpad_up    = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_DPAD_UP)    ? 1 : 0;
+	out->dpad_down  = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_DPAD_DOWN)  ? 1 : 0;
+	out->dpad_left  = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_DPAD_LEFT)  ? 1 : 0;
+	out->dpad_right = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_DPAD_RIGHT) ? 1 : 0;
+	out->cross      = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_SOUTH)      ? 1 : 0;
+	out->circle     = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_EAST)       ? 1 : 0;
+	out->start      = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_START)      ? 1 : 0;
+	out->lstick_x   = SDL_GetGamepadAxis(gc, SDL_GAMEPAD_AXIS_LEFTX);
+	out->lstick_y   = SDL_GetGamepadAxis(gc, SDL_GAMEPAD_AXIS_LEFTY);
+	return 1;
+}
+
 u_short PsyX_Pad_UpdateKeyboardInput();
 void	PsyX_Pad_UpdateGameControllerInput(SDL_Gamepad* cont, LPPADRAW pad);
 void	PsyX_Pad_Event_ControllerAdded(Sint32 deviceId);

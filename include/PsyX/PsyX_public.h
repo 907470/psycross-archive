@@ -149,6 +149,24 @@ extern unsigned short PsyX_Pad_GetLastP1Bits(void);
  * --bk2-record path to capture analog state. */
 extern void PsyX_Pad_GetLastP1Analog(unsigned char out_axes[4]);
 
+/* Raw P1 controller snapshot for host-side UI (the in-game settings menu), read
+ * straight from SDL and INDEPENDENT of g_PsyX_Pad_InputOverride — the menu sets
+ * that override to neutral to take input away from the game, which also makes
+ * PsyX_Pad_InternalPadUpdates skip the gamepad poll, so the merged bits above go
+ * blank while the menu owns input. This reads the live pad directly instead.
+ * Returns 1 and fills *out when a game controller is connected (first connected
+ * slot), else 0 with *out zeroed. Digital buttons are 0/1; the left-stick axes
+ * are signed SDL values [-32768, 32767] (+x right, +y down). Keep this SDL-free
+ * at the header boundary so openpete_core needn't pull in SDL. */
+typedef struct PsyX_RawPad {
+	int dpad_up, dpad_down, dpad_left, dpad_right;
+	int cross;                 /* SOUTH face button (PSX X) */
+	int circle;                /* EAST face button (PSX O) */
+	int start;                 /* START button */
+	int lstick_x, lstick_y;    /* left analog stick, signed */
+} PsyX_RawPad;
+extern int PsyX_Pad_GetRawP1(PsyX_RawPad* out);
+
 /* Usually called at the beginning of main function. `startHidden` creates
  * the window unmapped (no flash / focus-steal) — for headless / offscreen
  * runs that render but never present to a visible window. */
