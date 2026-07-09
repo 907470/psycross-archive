@@ -164,6 +164,10 @@ typedef struct PsyX_RawPad {
 	int circle;                /* EAST face button (PSX O) */
 	int start;                 /* START button */
 	int lstick_x, lstick_y;    /* left analog stick, signed */
+	int rstick_x, rstick_y;    /* right analog stick, signed */
+	int l1, r1;                /* shoulder buttons */
+	int l2, r2;                /* triggers, 1 when pressed past a threshold */
+	int l3, r3;                /* analog stick clicks */
 } PsyX_RawPad;
 extern int PsyX_Pad_GetRawP1(PsyX_RawPad* out);
 

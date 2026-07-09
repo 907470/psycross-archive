@@ -94,6 +94,16 @@ extern "C" int PsyX_Pad_GetRawP1(PsyX_RawPad* out)
 	out->start      = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_START)      ? 1 : 0;
 	out->lstick_x   = SDL_GetGamepadAxis(gc, SDL_GAMEPAD_AXIS_LEFTX);
 	out->lstick_y   = SDL_GetGamepadAxis(gc, SDL_GAMEPAD_AXIS_LEFTY);
+	out->rstick_x   = SDL_GetGamepadAxis(gc, SDL_GAMEPAD_AXIS_RIGHTX);
+	out->rstick_y   = SDL_GetGamepadAxis(gc, SDL_GAMEPAD_AXIS_RIGHTY);
+	out->l1         = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)  ? 1 : 0;
+	out->r1         = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) ? 1 : 0;
+	/* Triggers are analog [0, 32767]; report a digital "pressed" past a
+	 * generous threshold (host UI only wants an on/off edge). */
+	out->l2         = SDL_GetGamepadAxis(gc, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  > 8000 ? 1 : 0;
+	out->r2         = SDL_GetGamepadAxis(gc, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8000 ? 1 : 0;
+	out->l3         = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_LEFT_STICK)  ? 1 : 0;
+	out->r3         = SDL_GetGamepadButton(gc, SDL_GAMEPAD_BUTTON_RIGHT_STICK) ? 1 : 0;
 	return 1;
 }
 
