@@ -56,6 +56,11 @@ extern int PsyX_SPUAL_CaptureActive(void);
 extern unsigned int PsyX_SPUAL_StateSize(void);
 extern int PsyX_SPUAL_SnapshotState(void* dst, unsigned int size);
 extern int PsyX_SPUAL_RestoreState(const void* src, unsigned int size);
+/* quiet_al=1: restore ONLY the deterministic mirror (no source stops, no
+ * sample-dirty) — for high-rate same-timeline restores (runahead/rewind
+ * stress) where the audible half must not be perturbed. */
+extern int PsyX_SPUAL_RestoreStateEx(const void* src, unsigned int size,
+                                     int quiet_al);
 extern unsigned int PsyX_SPUAL_MemSize(void);
 extern int PsyX_SPUAL_SnapshotMem(void* dst, unsigned int size);
 extern int PsyX_SPUAL_RestoreMem(const void* src, unsigned int size);

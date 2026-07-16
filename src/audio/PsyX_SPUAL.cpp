@@ -1581,7 +1581,8 @@ extern "C" int PsyX_SPUAL_SnapshotState(void* dst, unsigned int size)
 	return 0;
 }
 
-extern "C" int PsyX_SPUAL_RestoreState(const void* src, unsigned int size)
+extern "C" int PsyX_SPUAL_RestoreStateEx(const void* src, unsigned int size,
+                                          int quiet_al)
 {
 	if (!src || size != sizeof(SPUALState))
 		return -1;
@@ -1607,9 +1608,15 @@ extern "C" int PsyX_SPUAL_RestoreState(const void* src, unsigned int size)
 		 * re-upload from the (restored) sample RAM. A voice that was
 		 * sustaining at save time stays silent until its next KeyOn —
 		 * bookkeeping-exact, audibly conservative. */
-		if (v->alSource != AL_NONE)
-			alSourceStop(v->alSource);
-		v->sampledirty++;
+		if (!quiet_al)
+		{
+			/* quiet_al=1 (speculative/high-rate restore): leave the
+			 * audible half alone — the caller re-runs the same timeline
+			 * and the deterministic mirror above is all that matters. */
+			if (v->alSource != AL_NONE)
+				alSourceStop(v->alSource);
+			v->sampledirty++;
+		}
 	}
 	SDL_UnlockMutex(g_SpuMutex);
 	return 0;
@@ -1638,4 +1645,9 @@ extern "C" int PsyX_SPUAL_RestoreMem(const void* src, unsigned int size)
 	memcpy(s_SpuMemory.samplemem, src, SPU_MEMSIZE);
 	SDL_UnlockMutex(g_SpuMutex);
 	return 0;
+}
+
+extern "C" int PsyX_SPUAL_RestoreState(const void* src, unsigned int size)
+{
+	return PsyX_SPUAL_RestoreStateEx(src, size, 0);
 }
