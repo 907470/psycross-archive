@@ -942,6 +942,34 @@ extern "C" int PsyX_VRAM_Restore(const void* src, unsigned int src_size)
 	return 0;
 }
 
+/* Row-delta restore for high-frequency rollback (per-tick runahead): only
+ * the rows that actually differ are copied back and dirty-notified, so a
+ * tick whose speculation never touched VRAM costs one compare and no GPU
+ * traffic, and a palette-animation tick invalidates a couple of rows
+ * instead of the full 1 MiB (a full-VRAM dirty every tick would thrash
+ * the downstream texture caches). Returns 1 if anything was restored,
+ * 0 if VRAM already matched, -1 on size mismatch. */
+extern "C" int PsyX_VRAM_RestoreDelta(const void* src, unsigned int src_size)
+{
+	if (!src || src_size != PsyX_VRAM_GetSize()) return -1;
+	const unsigned short* s = (const unsigned short*)src;
+	const size_t row_px = VRAM_WIDTH;
+	int lo = -1, hi = -1;
+	for (int y = 0; y < VRAM_HEIGHT; y++) {
+		if (memcmp(vram + (size_t)y * row_px, s + (size_t)y * row_px,
+		           row_px * sizeof(unsigned short)) != 0) {
+			if (lo < 0) lo = y;
+			hi = y;
+		}
+	}
+	if (lo < 0) return 0;
+	memcpy(vram + (size_t)lo * row_px, s + (size_t)lo * row_px,
+	       (size_t)(hi - lo + 1) * row_px * sizeof(unsigned short));
+	vram_need_update = 1;
+	VRAM_DirtyNotify(0, lo, VRAM_WIDTH, hi - lo + 1);
+	return 1;
+}
+
 void GR_ResetDevice()
 {
 	GR_UpdateSwapIntervalState(0);

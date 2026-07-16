@@ -124,6 +124,36 @@ int g_cdReadDoneFlag = 1;
 int g_cdXaStartLBA = 0;
 int g_cdXaStartVBL = 0;
 
+/* CD transport-state snapshot: the command queue plus the mode flags that
+ * a queued command's execution depends on. Guest CD commands enqueue here
+ * before CdSync/CdReadSync drain them, so a state rollback that restores
+ * guest RAM without the queue leaves phantom commands behind (or drops
+ * queued ones) — the drain then runs against the wrong transport state.
+ * In-process only: queue entries hold host pointers, so this must never
+ * be serialized to disk. */
+extern "C" int PsyX_CD_QueueStateSize(void)
+{
+	return (int)sizeof(g_cdComQueue) + 3 * (int)sizeof(int);
+}
+
+extern "C" void PsyX_CD_QueueSnapshot(void* dst)
+{
+	unsigned char* p = (unsigned char*)dst;
+	memcpy(p, g_cdComQueue, sizeof(g_cdComQueue));       p += sizeof(g_cdComQueue);
+	memcpy(p, &g_cdComQueueIndex, sizeof(int));          p += sizeof(int);
+	memcpy(p, &g_cdComQueueCount, sizeof(int));          p += sizeof(int);
+	memcpy(p, &readMode, sizeof(int));
+}
+
+extern "C" void PsyX_CD_QueueRestore(const void* src)
+{
+	const unsigned char* p = (const unsigned char*)src;
+	memcpy(g_cdComQueue, p, sizeof(g_cdComQueue));       p += sizeof(g_cdComQueue);
+	memcpy(&g_cdComQueueIndex, p, sizeof(int));          p += sizeof(int);
+	memcpy(&g_cdComQueueCount, p, sizeof(int));          p += sizeof(int);
+	memcpy(&readMode, p, sizeof(int));
+}
+
 char g_cdImageBinaryFileName[2048] = { 0 };
 int g_UseCDImage = 0;
 

@@ -232,6 +232,10 @@ extern void PsyX_SetSwapInterval(int interval);
 extern unsigned int PsyX_VRAM_GetSize(void);
 extern int  PsyX_VRAM_Snapshot(void* dst, unsigned int dst_size);
 extern int  PsyX_VRAM_Restore (const void* src, unsigned int src_size);
+/* Row-delta variant for high-frequency rollback (per-tick runahead):
+ * copies back and dirty-notifies ONLY the rows that differ. Returns 1 if
+ * anything was restored, 0 if VRAM already matched, -1 on size mismatch. */
+extern int  PsyX_VRAM_RestoreDelta(const void* src, unsigned int src_size);
 
 /* --- VRAM write notification (openpete W2.4 native VRAM model) ------------- *
  * Fired after EVERY write to the CPU-side `vram` mirror with the effective
