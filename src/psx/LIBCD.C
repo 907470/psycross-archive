@@ -113,6 +113,17 @@ int g_CD_com = 0;
 
 int g_cdReadDoneFlag = 1;
 
+/* Virtual streaming-head anchor for CdlReadS music/XA playback. The host
+ * audio decoder's real playhead advances on the AUDIO clock (buffer
+ * availability / wall time) — feeding THAT to the guest's GetlocP poll
+ * makes a gameplay-readable value nondeterministic (and ~3x too fast vs
+ * a real drive's 75 sectors/s). Instead the caller records the ReadS
+ * start sector and start VBL here, and the GetlocP reply is synthesized
+ * as start + elapsed-VBLs * 1001/800 (exactly 75/s of NTSC guest time).
+ * Snapshotted with the other CD head state (openpete savestate). */
+int g_cdXaStartLBA = 0;
+int g_cdXaStartVBL = 0;
+
 char g_cdImageBinaryFileName[2048] = { 0 };
 int g_UseCDImage = 0;
 
