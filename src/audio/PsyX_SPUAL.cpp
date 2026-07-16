@@ -1517,3 +1517,125 @@ u_int PsyX_SPUAL_GetReverbVoice()
 	}
 	return bits;
 }
+/* ─── SPU state-export (used by openpete save states) ─────────────────────
+ * Deterministic per-voice mirror + the SPU sample RAM, snapshot/restore in
+ * the same style as PsyX_VRAM_*. The OpenAL half (alBuffer/alSource
+ * handles) is host-runtime-only and is NOT serialized: on restore every
+ * source is stopped and marked sample-dirty, so pre-restore audio dies and
+ * the next KeyOn re-uploads from the restored sample RAM. The envelope sim
+ * fields ARE restored exactly — SpuGetKeyStatus readbacks continue from
+ * the saved phase machine (guest voice-pool bookkeeping stays coherent). */
+
+typedef struct
+{
+	SpuVoiceAttr attr;
+	uint16_t reverb;
+	uint16_t keyed_on;
+	uint16_t adsr1;
+	uint16_t adsr2;
+	uint8_t  adsr_phase;
+	uint8_t  pad_[3];
+	int16_t  adsr_volume;
+	PsyX_SPUEnvelope env;
+	int32_t  one_shot_samples_remaining;
+} SPUALVoiceState;
+
+typedef struct
+{
+	uint32_t writeptr_off;   /* s_SpuMemory.writeptr - samplemem */
+	uint32_t malloc_val;     /* s_spuMallocVal bump cursor */
+	SPUALVoiceState voices[24 /* s_spuVoiceCount */];
+} SPUALState;
+
+extern "C" unsigned int PsyX_SPUAL_StateSize(void)
+{
+	return (unsigned int)sizeof(SPUALState);
+}
+
+extern "C" int PsyX_SPUAL_SnapshotState(void* dst, unsigned int size)
+{
+	if (!dst || size != sizeof(SPUALState))
+		return -1;
+	SPUALState* st = (SPUALState*)dst;
+	SDL_LockMutex(g_SpuMutex);
+	st->writeptr_off = s_SpuMemory.writeptr
+	                 ? (uint32_t)(s_SpuMemory.writeptr - s_SpuMemory.samplemem)
+	                 : 0u;
+	st->malloc_val = (uint32_t)s_spuMallocVal;
+	for (int i = 0; i < s_spuVoiceCount; i++)
+	{
+		const SPUALVoice* v = &g_SpuVoices[i];
+		SPUALVoiceState* o = &st->voices[i];
+		memset(o, 0, sizeof(*o));
+		o->attr        = v->attr;
+		o->reverb      = v->reverb;
+		o->keyed_on    = (uint16_t)v->keyed_on;
+		o->adsr1       = v->adsr1;
+		o->adsr2       = v->adsr2;
+		o->adsr_phase  = v->adsr_phase;
+		o->adsr_volume = v->adsr_volume;
+		o->env = v->env;
+		o->one_shot_samples_remaining = v->one_shot_samples_remaining;
+	}
+	SDL_UnlockMutex(g_SpuMutex);
+	return 0;
+}
+
+extern "C" int PsyX_SPUAL_RestoreState(const void* src, unsigned int size)
+{
+	if (!src || size != sizeof(SPUALState))
+		return -1;
+	const SPUALState* st = (const SPUALState*)src;
+	SDL_LockMutex(g_SpuMutex);
+	s_SpuMemory.writeptr = s_SpuMemory.samplemem + st->writeptr_off;
+	s_spuMallocVal = (int)st->malloc_val;
+	for (int i = 0; i < s_spuVoiceCount; i++)
+	{
+		SPUALVoice* v = &g_SpuVoices[i];
+		const SPUALVoiceState* o = &st->voices[i];
+		v->attr        = o->attr;
+		v->reverb      = o->reverb;
+		v->keyed_on    = (int)o->keyed_on;
+		v->adsr1       = o->adsr1;
+		v->adsr2       = o->adsr2;
+		v->adsr_phase  = o->adsr_phase;
+		v->adsr_volume = o->adsr_volume;
+		v->env = o->env;
+		v->one_shot_samples_remaining = o->one_shot_samples_remaining;
+		/* Kill the audible half: the source is playing pre-restore
+		 * content (or nothing). sampledirty forces the next KeyOn to
+		 * re-upload from the (restored) sample RAM. A voice that was
+		 * sustaining at save time stays silent until its next KeyOn —
+		 * bookkeeping-exact, audibly conservative. */
+		if (v->alSource != AL_NONE)
+			alSourceStop(v->alSource);
+		v->sampledirty++;
+	}
+	SDL_UnlockMutex(g_SpuMutex);
+	return 0;
+}
+
+extern "C" unsigned int PsyX_SPUAL_MemSize(void)
+{
+	return (unsigned int)SPU_MEMSIZE;
+}
+
+extern "C" int PsyX_SPUAL_SnapshotMem(void* dst, unsigned int size)
+{
+	if (!dst || size != (unsigned int)SPU_MEMSIZE)
+		return -1;
+	SDL_LockMutex(g_SpuMutex);
+	memcpy(dst, s_SpuMemory.samplemem, SPU_MEMSIZE);
+	SDL_UnlockMutex(g_SpuMutex);
+	return 0;
+}
+
+extern "C" int PsyX_SPUAL_RestoreMem(const void* src, unsigned int size)
+{
+	if (!src || size != (unsigned int)SPU_MEMSIZE)
+		return -1;
+	SDL_LockMutex(g_SpuMutex);
+	memcpy(s_SpuMemory.samplemem, src, SPU_MEMSIZE);
+	SDL_UnlockMutex(g_SpuMutex);
+	return 0;
+}

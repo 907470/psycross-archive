@@ -46,6 +46,20 @@ extern void PsyX_SPUAL_TickEnvelope(int samples);
 extern int PsyX_SPUAL_CaptureDrain(short* out, int max_frames);
 extern int PsyX_SPUAL_CaptureActive(void);
 
+/* SPU state-export (used by openpete save states) — deterministic
+ * per-voice mirror (+ transfer/alloc cursors) and the SPU sample RAM.
+ * Snapshot/restore in the PsyX_VRAM_* style: fixed sizes (query first),
+ * mismatched sizes return non-zero. Restore stops every OpenAL source and
+ * marks samples dirty (next KeyOn re-uploads from the restored RAM); the
+ * envelope-sim fields restore exactly so SpuGetKeyStatus stays coherent
+ * with the loaded guest state. */
+extern unsigned int PsyX_SPUAL_StateSize(void);
+extern int PsyX_SPUAL_SnapshotState(void* dst, unsigned int size);
+extern int PsyX_SPUAL_RestoreState(const void* src, unsigned int size);
+extern unsigned int PsyX_SPUAL_MemSize(void);
+extern int PsyX_SPUAL_SnapshotMem(void* dst, unsigned int size);
+extern int PsyX_SPUAL_RestoreMem(const void* src, unsigned int size);
+
 extern int PsyX_SPUAL_SetMute(int on_off);
 extern int PsyX_SPUAL_SetReverb(int on_off);
 extern int PsyX_SPUAL_GetReverbState();
