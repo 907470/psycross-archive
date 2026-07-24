@@ -6,6 +6,7 @@
 #include "PsyX_SPUAL.h"
 #include "PsyX_XA.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include <AL/al.h>
@@ -1007,12 +1008,36 @@ static int decodeSound(u_char* iData, int soundSize, short* oData, int* loopStar
 		}
 	}
 
-	return soundSize;
+	// Ran through the whole input window without hitting an END-flagged
+	// block: report the number of output samples actually written (k),
+	// NOT the input byte count — callers size AL buffers from this.
+	return k;
+}
+
+// Byte length of the ADPCM sample starting at `addr`: up to and including
+// the first END-flagged (LoopEnd) block, capped at `max_bytes` for samples
+// with no terminator (e.g. key-on into uninitialized SPU RAM).
+static int SPUAL_SampleByteLength(u_int addr, int max_bytes)
+{
+	int len = 0;
+	while (len + 16 <= max_bytes)
+	{
+		u_char flags = s_SpuMemory.samplemem[addr + len + 1];
+		len += 16;
+		if (flags & 0x01) // LoopEnd
+			break;
+	}
+	return len;
 }
 
 static void UpdateVoiceSample(SPUALVoice* voice)
 {
-	static short waveBuffer[SPU_REALMEMSIZE];
+	// Decode scratch, grown on demand (guarded by g_SpuMutex like the
+	// rest of the voice state). Long one-shots — Spyro 1's intro
+	// cutscene soundtrack is a single ~490 KB sample, ~1.7 MB of PCM —
+	// exceed any fixed-size buffer worth keeping resident.
+	static short* s_decodeBuf = NULL;
+	static int s_decodeBufCap = 0; // in samples (shorts)
 	int loopStart, loopLen, count;
 	ALuint alSource, alBuffer;
 
@@ -1030,16 +1055,28 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 	loopStart = 0;
 	loopLen = 0;
 
-	/* decodeSound emits up to 2 shorts per input byte; cap the input window
-	 * so the output never overruns waveBuffer[SPU_REALMEMSIZE]. Samples that
-	 * lack a LoopEnd flag (e.g. uninitialized SPU RAM) would otherwise loop
-	 * to the SPU_MEMSIZE end (~2 MB) and write ~8 MB into a 1 MB buffer,
-	 * silently corrupting adjacent statics and deferred-crashing the mixer. */
+	/* Size the decode exactly: walk the block flags to the sample's END
+	 * marker first, then decode that window in full. Real SPU RAM is
+	 * 512 KB, so no legitimate sample exceeds SPU_REALMEMSIZE — that cap
+	 * also bounds END-less garbage (uninitialized RAM) instead of letting
+	 * the decode run to the ~2 MB samplemem end. */
 	{
-		int avail = SPU_MEMSIZE - voice->attr.addr;
-		int max_in = SPU_REALMEMSIZE / 2;  /* yields <= SPU_REALMEMSIZE shorts */
-		if (avail > max_in) avail = max_in;
-		count = decodeSound(s_SpuMemory.samplemem + voice->attr.addr, avail, waveBuffer, &loopStart, &loopLen, 1);
+		int avail = SPU_MEMSIZE - (int)voice->attr.addr;
+		if (avail > SPU_REALMEMSIZE) avail = SPU_REALMEMSIZE;
+		if (avail < 0) avail = 0;
+		int in_bytes = SPUAL_SampleByteLength(voice->attr.addr, avail);
+		int out_samples = (in_bytes / 16) * 28; // 28 samples per 16-byte block
+		if (out_samples > s_decodeBufCap)
+		{
+			short* grown = (short*)realloc(s_decodeBuf, out_samples * sizeof(short));
+			if (!grown)
+				return;
+			s_decodeBuf = grown;
+			s_decodeBufCap = out_samples;
+		}
+		if (out_samples == 0)
+			return;
+		count = decodeSound(s_SpuMemory.samplemem + voice->attr.addr, in_bytes, s_decodeBuf, &loopStart, &loopLen, 1);
 	}
 
 	if (count == 0)
@@ -1054,7 +1091,7 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 		alGenBuffers(1, &aalBuffer);
 
 		// update AL buffer
-		alBufferData(aalBuffer, AL_FORMAT_MONO16, waveBuffer, count * sizeof(short), 11000);
+		alBufferData(aalBuffer, AL_FORMAT_MONO16, s_decodeBuf, count * sizeof(short), 11000);
 
 		// set the buffer
 		alSourcei(aalSource, AL_BUFFER, aalBuffer);
@@ -1076,7 +1113,7 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 #endif
 
 	alSourcei(alSource, AL_BUFFER, 0);
-	alBufferData(alBuffer, AL_FORMAT_MONO16, waveBuffer, count * sizeof(short), 44100);
+	alBufferData(alBuffer, AL_FORMAT_MONO16, s_decodeBuf, count * sizeof(short), 44100);
 
 	if (loopLen > 0)
 	{
