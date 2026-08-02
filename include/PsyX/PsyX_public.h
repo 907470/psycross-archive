@@ -96,6 +96,18 @@ extern PsyXPostRenderOverlayFunc	g_psyx_postRenderOverlay;
  * of SetGeomOffset's x-component so the wider geometry is centred. */
 extern float g_psyx_render_aspect_factor;
 
+/* Render the scene at the console's own display raster instead of a
+ * square-pixel 4:3 grid derived from the host window height.
+ *
+ * Normally the present FBO is sized window_h * DISPENV.disp.h/DRAWENV.clip.h
+ * tall by 4:3 wide, so the visible crop is a supersampled, square-pixel image
+ * that a host window can display without further correction. With this set the
+ * FBO is exactly DISPENV.disp.w x DISPENV.disp.h (512x240 for Spyro), so every
+ * FBO texel is one PSX pixel: the crop carries the authentic raster, with the
+ * console's non-square pixels and its aliasing, and the window blit scales it
+ * up. Off by default; the display path is unchanged. */
+extern int g_psyx_present_native_raster;
+
 /* Audio capture mode. When non-zero at PsyX_SPUAL_InitSound, OpenAL opens a
  * loopback device instead of the normal output device so the mixed SPU PCM
  * can be pulled (PsyX_SPUAL_CaptureDrain) for --record. The host sets this

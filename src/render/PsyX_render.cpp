@@ -847,8 +847,22 @@ void GR_BeginScene()
 
 #if USE_OPENGL
 	{
-		int fb_h = GR_PresentFBHeightForWindow(g_windowHeight);
-		int fb_w = GR_PresentFBWidthForHeight(fb_h);
+		int fb_h, fb_w;
+		if (g_psyx_present_native_raster &&
+			activeDispEnv.disp.w > 0 && activeDispEnv.disp.h > 0)
+		{
+			/* One FBO texel per PSX pixel (see g_psyx_present_native_raster).
+			 * The visible crop is then DISPENV.disp.w x DRAWENV.clip.h — the
+			 * console framebuffer itself — and GR_PresentCroppedToWindow
+			 * scales it onto the window. */
+			fb_w = activeDispEnv.disp.w;
+			fb_h = activeDispEnv.disp.h;
+		}
+		else
+		{
+			fb_h = GR_PresentFBHeightForWindow(g_windowHeight);
+			fb_w = GR_PresentFBWidthForHeight(fb_h);
+		}
 		GR_EnsurePresentFB(fb_w, fb_h);
 	}
 	if (g_glPresentFramebuffer)
