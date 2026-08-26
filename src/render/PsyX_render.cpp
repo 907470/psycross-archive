@@ -386,7 +386,13 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen, int startHidden)
 int GR_InitialiseGLExt()
 {
 #ifdef USE_GLAD
-	GLenum err = gladLoadGL();
+	/* openpete: load through SDL rather than glad's argless gladLoadGL().
+	 * That variant dlopens libGL.so.1 and resolves everything via
+	 * glXGetProcAddressARB, which does not exist under EGL — every core
+	 * entry point comes back NULL and the first draw calls address 0,
+	 * even though the context itself created fine. SDL_GL_GetProcAddress
+	 * uses whichever of GLX/EGL/WGL actually backs the context. */
+	GLenum err = gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress);
 
 	if (err == 0)
 		return 0;

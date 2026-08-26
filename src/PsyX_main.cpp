@@ -1143,14 +1143,20 @@ void PsyX_Shutdown()
 		SDL_DestroyMutex(g_intrMutex);
 	}
 
+	/* GL teardown must precede SDL_DestroyWindow. Destroying the last
+	 * window makes SDL drop the GL context and unload the GL library;
+	 * under EGL that dlclose actually unmaps it, so every entry point
+	 * glad resolved is left dangling and the first glDelete* call in
+	 * GR_Shutdown jumps into an unmapped page. Under GLX the same
+	 * ordering survives only because the library stays mapped. */
+	if (!g_psyx_null_gpu)
+		GR_Shutdown();
+
 	if (g_window)
 	{
 		SDL_DestroyWindow(g_window);
 		g_window = NULL;
 	}
-
-	if (!g_psyx_null_gpu)
-		GR_Shutdown();
 	SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
 
 	// Tear down audio before SDL_Quit so OpenAL's PulseAudio backend gets a
