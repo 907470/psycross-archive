@@ -243,6 +243,14 @@ extern void PsyX_UpdateInput(void);
  * the injection half on the Alt key so Alt+Enter can't register as Start —
  * callers driving the halves directly own that gate. */
 extern void PsyX_Sys_DoPollEvent(void);
+
+/* Route one already-dequeued SDL event to PsyCross's handlers (controller
+ * hotplug, window resize, its debug keys/mouse, text input, Alt tracking).
+ * For a host that owns the process's single SDL_PollEvent loop: it pumps and
+ * calls this per event, so PsyCross keeps its handlers without a second drain
+ * on the shared queue. Argument is a const SDL_Event*, typed void* so this
+ * header stays SDL-free. */
+extern void PsyX_Sys_HandleEvent(void* sdl_event);
 extern void PsyX_Pad_InternalPadUpdates(void);
 
 /* Returns keyboard mapping index */

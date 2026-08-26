@@ -725,10 +725,13 @@ void PsyX_Exit();
 int g_activeKeyboardControllers = 0x1;
 int g_altKeyState = 0;
 
-void PsyX_Sys_DoPollEvent()
+/* Handle one already-dequeued event. Split out of PsyX_Sys_DoPollEvent so a
+ * host that owns the process's single SDL_PollEvent loop can still route
+ * events here, rather than reimplementing these handlers and drifting from
+ * them. Takes void* to keep PsyX_public.h free of an SDL dependency. */
+extern "C" void PsyX_Sys_HandleEvent(void* sdl_event)
 {
-	SDL_Event event;
-	while (SDL_PollEvent(&event))
+	const SDL_Event& event = *(const SDL_Event*)sdl_event;
 	{
 		/* SDL3: window events are top-level types (no SDL_WINDOWEVENT
 		 * wrapper); the keysym struct is flattened onto event.key. */
@@ -800,6 +803,16 @@ void PsyX_Sys_DoPollEvent()
 	}
 }
 
+/* Drain the queue into PsyX_Sys_HandleEvent. Only for callers that own the
+ * process's event pump themselves; openpete drives its own loop and calls
+ * PsyX_Sys_HandleEvent per event, so two drains never race for one queue. */
+void PsyX_Sys_DoPollEvent()
+{
+	SDL_Event event;
+	while (SDL_PollEvent(&event))
+		PsyX_Sys_HandleEvent(&event);
+}
+
 char begin_scene_flag = 0;
 
 /* Renderer-foundation Phase 1 (draw-call matcher) — finalize hook. */
@@ -810,7 +823,10 @@ char PsyX_BeginScene()
 	if (g_psyx_null_gpu)
 		return 0;   /* library-only: no GL scene ever begins */
 
-	PsyX_Sys_DoPollEvent();
+	/* No event pump here. This runs on the game's fiber, so pumping from it
+	 * put a second drain on the one SDL queue in every mode where PsyCross
+	 * rasterizes (headless, --renderer psycross/ab/diff, screenshot capture),
+	 * racing the host's own pump for events. The host owns the pump. */
 
 	if (begin_scene_flag)
 		return 0;
