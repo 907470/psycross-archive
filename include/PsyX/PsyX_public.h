@@ -148,6 +148,11 @@ extern int							g_PsyX_Pad_OverrideActive;
  * stick, so a digital-only movie just replays with these left at 128 (centre). */
 extern unsigned char				g_PsyX_Pad_AnalogOverride[4];
 
+/* 1 once P1 has a registered pad buffer and pad comms are on. The readbacks
+ * below cannot distinguish "no buffer yet" from "genuinely neutral", so anything
+ * comparing against them must gate on this first. */
+extern int PsyX_Pad_P1Ready(void);
+
 /* Read P1's last computed pad bitfield (after PsyX_Pad_InternalPadUpdates). Same
  * "released = 1, pressed = 0" convention as g_PsyX_Pad_InputOverride. Returns
  * 0xFFFF when no controller buffer is registered yet. Used by the host's
@@ -160,6 +165,21 @@ extern unsigned short PsyX_Pad_GetLastP1Bits(void);
  * 128 when no controller buffer is registered yet. Used by the host's
  * --bk2-record path to capture analog state. */
 extern void PsyX_Pad_GetLastP1Analog(unsigned char out_axes[4]);
+
+/* Decode P1's LIVE SDL input (keyboard + gamepad, same merge the non-override
+ * path performs) into a caller-owned snapshot, without touching any registered
+ * PSX pad buffer and regardless of whether the override is active. Bits use the
+ * "released = 1, pressed = 0" convention of g_PsyX_Pad_InputOverride; axes are
+ * PSX pad->analog order (RX, RY, LX, LY).
+ *
+ * This is the seam that lets the host own *decode* while injection stays on the
+ * single override channel: the host decodes, arbitrates against its other
+ * override writers, then stamps. Sharing this one implementation with the
+ * non-override path is what makes the two bit-identical by construction, so no
+ * separate decoder has to be proven equal to it.
+ *
+ * Reads SDL state as of the last event pump; it does not pump. */
+extern void PsyX_Pad_DecodeP1(unsigned short* out_bits, unsigned char out_axes[4]);
 
 /* Raw P1 controller snapshot for host-side UI (the in-game settings menu), read
  * straight from SDL and INDEPENDENT of g_PsyX_Pad_InputOverride — the menu sets
@@ -215,6 +235,15 @@ extern void PsyX_SwapWindowOnly(void);
 
 /* Explicitly updates emulator input loop */
 extern void PsyX_UpdateInput(void);
+
+/* The two halves of PsyX_UpdateInput, exposed so the host can run the event
+ * pump and the pad injection as separate steps with its own decode/arbitration
+ * in between (and, once the host loop is threaded, on different threads).
+ * PsyX_UpdateInput remains the combined convenience form. Note it also gates
+ * the injection half on the Alt key so Alt+Enter can't register as Start —
+ * callers driving the halves directly own that gate. */
+extern void PsyX_Sys_DoPollEvent(void);
+extern void PsyX_Pad_InternalPadUpdates(void);
 
 /* Returns keyboard mapping index */
 extern int PsyX_LookupKeyboardMapping(const char* str, int default_value);

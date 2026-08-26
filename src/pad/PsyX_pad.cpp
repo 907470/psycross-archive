@@ -38,6 +38,15 @@ int g_PsyX_Pad_OverrideActive = 0;
 unsigned char g_PsyX_Pad_AnalogOverride[4] = { 128, 128, 128, 128 };
 }
 
+/* See PsyX_public.h. 1 once slot 0 has a registered pad buffer and pad comms
+ * are enabled — i.e. once PsyX_Pad_InternalPadUpdates actually writes anything.
+ * Before the game calls PadInitDirect there is no buffer to write, so the
+ * "last P1" readbacks return their no-buffer defaults rather than real state. */
+extern "C" int PsyX_Pad_P1Ready(void)
+{
+	return (g_padCommEnable != 0 && g_controllers[0].padData != NULL) ? 1 : 0;
+}
+
 /* See PsyX_public.h. Returns the last-merged P1 pad bits (0xFFFF when no
  * pad buffer is registered yet — happens before the game calls PadInitDirect
  * and during boot frames before the first internal-pad-update tick). */
@@ -109,6 +118,7 @@ extern "C" int PsyX_Pad_GetRawP1(PsyX_RawPad* out)
 
 u_short PsyX_Pad_UpdateKeyboardInput();
 void	PsyX_Pad_UpdateGameControllerInput(SDL_Gamepad* cont, LPPADRAW pad);
+void	PsyX_Pad_DecodeLiveSlot(int i, u_short kbInputs, LPPADRAW pad);
 void	PsyX_Pad_Event_ControllerAdded(Sint32 deviceId);
 static bool PsyX_Pad_UpdateKeyboardLeftStick(u_char* outX, u_char* outY);
 
@@ -342,6 +352,72 @@ void PsyX_Pad_Event_ControllerRemoved(Sint32 deviceId)
 	}
 }
 
+/* Live SDL -> pad decode for one slot: gamepad first, then keyboard-as-pad
+ * merged on top. Extracted so the host can decode a pad value WITHOUT owning
+ * a PSX pad buffer (PsyX_Pad_DecodeP1) and get a bit-identical result by
+ * construction — there is exactly one implementation of this merge.
+ *
+ * `pad` is fully written (buttons and all four axes) regardless of prior
+ * contents: PsyX_Pad_UpdateGameControllerInput assigns rather than
+ * accumulates, including its no-controller case (0xFFFF buttons, axes 127). */
+void PsyX_Pad_DecodeLiveSlot(int i, u_short kbInputs, LPPADRAW pad)
+{
+	PsyX_Pad_UpdateGameControllerInput(g_controllers[i].gc, pad);
+
+	/* Merge keyboard-as-pad into this slot IN ADDITION to any gamepad
+	 * polled above, so keyboard and controller both drive the game at
+	 * once (buttons are active-low ANDed — either source presses; WASD
+	 * overrides the left stick only while held). We used to gate this on
+	 * !controller->gc ("a controller owns its slot") to stop a Steam-
+	 * Input config that types phantom keys from bleeding into gameplay,
+	 * but that killed WASD/ZXCV/arrows entirely whenever any pad was
+	 * connected. Same Steam-side-curable trade-off accepted for host
+	 * hotkeys (see openpete run.c). */
+	if (g_activeKeyboardControllers & (1 << i))
+	{
+		u_char kb_lx, kb_ly;
+		bool wasd_held = PsyX_Pad_UpdateKeyboardLeftStick(&kb_lx, &kb_ly);
+
+		if (wasd_held)
+		{
+			/* WASD -> left analog stick. The pad is always in
+			 * analog mode (see PsyX_Pad_InitPad), so the game
+			 * samples pad->analog[2..3]. */
+			pad->analog[2] = kb_lx;
+			pad->analog[3] = kb_ly;
+			pad->status = 0;
+		}
+
+		if (kbInputs != 0xffff)
+		{
+			pad->status = 0;	// PadStateStable?
+			*(u_short*)pad->buttons &= kbInputs;
+		}
+	}
+}
+
+/* See PsyX_public.h. Decodes slot 0's live SDL input into a caller-owned
+ * snapshot without touching any registered pad buffer, so the host can own
+ * decode (and choose when to latch it) while injection still happens through
+ * the single override seam. Runs the same keyboard read and the same
+ * per-slot merge the non-override path uses. */
+extern "C" void PsyX_Pad_DecodeP1(unsigned short* out_bits, unsigned char out_axes[4])
+{
+	PADRAW scratch;
+	memset(&scratch, 0, sizeof(scratch));
+
+	PsyX_Pad_DecodeLiveSlot(0, PsyX_Pad_UpdateKeyboardInput(), &scratch);
+
+	if (out_bits) *out_bits = *(u_short*)scratch.buttons;
+	if (out_axes)
+	{
+		out_axes[0] = scratch.analog[0];
+		out_axes[1] = scratch.analog[1];
+		out_axes[2] = scratch.analog[2];
+		out_axes[3] = scratch.analog[3];
+	}
+}
+
 void PsyX_Pad_InternalPadUpdates()
 {
 	PsyXController* controller;
@@ -391,38 +467,7 @@ void PsyX_Pad_InternalPadUpdates()
 				continue;
 			}
 
-			PsyX_Pad_UpdateGameControllerInput(controller->gc, pad);
-
-			/* Merge keyboard-as-pad into this slot IN ADDITION to any gamepad
-			 * polled above, so keyboard and controller both drive the game at
-			 * once (buttons are active-low ANDed — either source presses; WASD
-			 * overrides the left stick only while held). We used to gate this on
-			 * !controller->gc ("a controller owns its slot") to stop a Steam-
-			 * Input config that types phantom keys from bleeding into gameplay,
-			 * but that killed WASD/ZXCV/arrows entirely whenever any pad was
-			 * connected. Same Steam-side-curable trade-off accepted for host
-			 * hotkeys (see openpete run.c). */
-			if (g_activeKeyboardControllers & (1 << i))
-			{
-				u_char kb_lx, kb_ly;
-				bool wasd_held = PsyX_Pad_UpdateKeyboardLeftStick(&kb_lx, &kb_ly);
-
-				if (wasd_held)
-				{
-					/* WASD -> left analog stick. The pad is always in
-					 * analog mode (see PsyX_Pad_InitPad), so the game
-					 * samples pad->analog[2..3]. */
-					pad->analog[2] = kb_lx;
-					pad->analog[3] = kb_ly;
-					pad->status = 0;
-				}
-
-				if (kbInputs != 0xffff)
-				{
-					pad->status = 0;	// PadStateStable?
-					*(u_short*)pad->buttons &= kbInputs;
-				}
-			}
+			PsyX_Pad_DecodeLiveSlot(i, kbInputs, pad);
 		}
 	}
 
