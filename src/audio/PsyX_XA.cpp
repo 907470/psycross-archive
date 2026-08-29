@@ -18,8 +18,10 @@
 
 #include <AL/al.h>
 #include <AL/alc.h>
+#include <AL/alext.h>   /* AL_DIRECT_CHANNELS_SOFT */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -71,6 +73,14 @@ struct XAState {
 
     float    gain         = 1.0f;
     float    forced_gain  = -1.0f;   /* >=0 → overrides `gain` */
+
+    /* 37800 -> 44100 zigzag resampler. The ring holds the last 32 input
+     * samples per channel and persists across sectors, the stream being
+     * continuous; sixstep counts down the six inputs that produce seven
+     * outputs. */
+    int16_t  zz_ring[2][32] = {};
+    int      zz_pos     = 0;
+    int      zz_sixstep = 6;
 } g_xa;
 
 inline int16_t clamp16(int32_t v) {
@@ -78,6 +88,98 @@ inline int16_t clamp16(int32_t v) {
     if (v < -32768) return -32768;
     return (int16_t)v;
 }
+
+/* --- PSX CD-audio 37800 Hz -> 44100 Hz resampling -------------------------
+ *
+ * The CD decoder does not hand XA to the mixer at its native rate: it applies
+ * a 25-point zigzag interpolation that emits seven 44100 Hz samples for every
+ * six 37800 Hz samples. Tables and procedure are from psx-spx, "25-point
+ * Zigzag Interpolation" (CDROM XA-ADPCM section).
+ *
+ * Doing this here rather than handing 37800 Hz buffers to the audio backend
+ * and letting it resample matters twice over. The filter's passband gain is
+ * about 0.905, so omitting it leaves music roughly 0.9 dB above hardware; and
+ * its response shapes the top of the band in a way a general-purpose
+ * resampler does not reproduce, which otherwise both loses content below the
+ * source's 18.9 kHz Nyquist and mirrors energy back above it.
+ *
+ * The seven tables are the seven output phases; index i runs 1..29 over the
+ * ring reading backwards from the write position.
+ */
+static const int16_t kZigZag[7][29] = {
+    /* Table1 */
+    {  0x0000,  0x0000,  0x0000,  0x0000,  0x0000, -0x0002,  0x000A, -0x0022,
+       0x0041, -0x0054,  0x0034,  0x0009, -0x010A,  0x0400, -0x0A78,  0x234C,
+       0x6794, -0x1780,  0x0BCD, -0x0623,  0x0350, -0x016D,  0x006B,  0x000A,
+      -0x0010,  0x0011, -0x0008,  0x0003, -0x0001 },
+    /* Table2 */
+    {  0x0000,  0x0000,  0x0000, -0x0002,  0x0000,  0x0003, -0x0013,  0x003C,
+      -0x004B,  0x00A2, -0x00E3,  0x0132, -0x0043, -0x0267,  0x0C9D,  0x74BB,
+      -0x11B4,  0x09B8, -0x05BF,  0x0372, -0x01A8,  0x00A6, -0x001B,  0x0005,
+       0x0006, -0x0008,  0x0003, -0x0001,  0x0000 },
+    /* Table3 */
+    {  0x0000,  0x0000, -0x0001,  0x0003, -0x0002, -0x0005,  0x001F, -0x004A,
+       0x00B3, -0x0192,  0x02B1, -0x039E,  0x04F8, -0x05A6,  0x7939, -0x05A6,
+       0x04F8, -0x039E,  0x02B1, -0x0192,  0x00B3, -0x004A,  0x001F, -0x0005,
+      -0x0002,  0x0003, -0x0001,  0x0000,  0x0000 },
+    /* Table4 */
+    {  0x0000, -0x0001,  0x0003, -0x0008,  0x0006,  0x0005, -0x001B,  0x00A6,
+      -0x01A8,  0x0372, -0x05BF,  0x09B8, -0x11B4,  0x74BB,  0x0C9D, -0x0267,
+      -0x0043,  0x0132, -0x00E3,  0x00A2, -0x004B,  0x003C, -0x0013,  0x0003,
+       0x0000, -0x0002,  0x0000,  0x0000,  0x0000 },
+    /* Table5 */
+    { -0x0001,  0x0003, -0x0008,  0x0011, -0x0010,  0x000A,  0x006B, -0x016D,
+       0x0350, -0x0623,  0x0BCD, -0x1780,  0x6794,  0x234C, -0x0A78,  0x0400,
+      -0x010A,  0x0009,  0x0034, -0x0054,  0x0041, -0x0022,  0x000A, -0x0001,
+       0x0000,  0x0001,  0x0000,  0x0000,  0x0000 },
+    /* Table6 */
+    {  0x0002, -0x0008,  0x0010, -0x0023,  0x002B,  0x001A, -0x00EB,  0x027B,
+      -0x0548,  0x0AFA, -0x16FA,  0x53E0,  0x3C07, -0x1249,  0x080E, -0x0347,
+       0x015B, -0x0044, -0x0017,  0x0046, -0x0023,  0x0011, -0x0005,  0x0000,
+       0x0000,  0x0000,  0x0000,  0x0000,  0x0000 },
+    /* Table7 */
+    { -0x0005,  0x0011, -0x0023,  0x0046, -0x0017, -0x0044,  0x015B, -0x0347,
+       0x080E, -0x1249,  0x3C07,  0x53E0, -0x16FA,  0x0AFA, -0x0548,  0x027B,
+      -0x00EB,  0x001A,  0x002B, -0x0023,  0x0010, -0x0008,  0x0002,  0x0000,
+       0x0000,  0x0000,  0x0000,  0x0000,  0x0000 },
+};
+
+/* One output phase. The taps are 1/8000h units; the accumulator carries full
+ * precision and is scaled once at the end rather than per term. */
+static int16_t zigzag_phase(const int16_t* ring, int pos, const int16_t* tbl)
+{
+    int32_t sum = 0;
+    for (int i = 1; i <= 29; ++i)
+        sum += (int32_t)ring[(pos - i) & 0x1F] * (int32_t)tbl[i - 1];
+    return clamp16(sum >> 15);
+}
+
+/* Feed one input frame; writes 7 output frames every 6th call and returns the
+ * number of int16 values written (0 otherwise). */
+static int zigzag_push(const int16_t* in, int channels, int16_t* out)
+{
+    for (int c = 0; c < channels; ++c)
+        g_xa.zz_ring[c][g_xa.zz_pos & 0x1F] = in[c];
+    g_xa.zz_pos = (g_xa.zz_pos + 1) & 0x1F;
+
+    if (--g_xa.zz_sixstep > 0)
+        return 0;
+    g_xa.zz_sixstep = 6;
+
+    int written = 0;
+    for (int phase = 0; phase < 7; ++phase)
+        for (int c = 0; c < channels; ++c)
+            out[written++] = zigzag_phase(g_xa.zz_ring[c], g_xa.zz_pos, kZigZag[phase]);
+    return written;
+}
+
+static void zigzag_reset(void)
+{
+    memset(g_xa.zz_ring, 0, sizeof(g_xa.zz_ring));
+    g_xa.zz_pos     = 0;
+    g_xa.zz_sixstep = 6;
+}
+
 
 /* Decode 28 ADPCM samples from a pre-extracted nibble stream into PCM.
  * Independent of byte/nibble layout, which is handled by the caller. */
@@ -223,12 +325,61 @@ int find_free_buffer()
 
 } // namespace
 
+/* Pick an OpenAL resampler by name rather than by enum index: the index list
+ * has gained entries across openal-soft releases, so a hardcoded number
+ * silently means something else against a different runtime. Preference runs
+ * best-first and falls back to whatever the device defaults to. */
+static void PsyX_XA_SelectResampler(ALuint source)
+{
+#ifdef AL_SOFT_source_resampler
+    if (!alIsExtensionPresent("AL_SOFT_source_resampler"))
+        return;
+    static const char* kPreferred[] = {
+        "23rd order Sinc",   /* bsinc24 - band-limited, scales with ratio */
+        "11th order Sinc",   /* bsinc12 */
+        "4-point Gaussian",
+    };
+    /* Resolved at runtime: the loader's headers do not always declare it even
+     * when the driver exports it. */
+    typedef const ALchar* (AL_APIENTRY *LPALGETSTRINGISOFT)(ALenum, ALsizei);
+    LPALGETSTRINGISOFT p_alGetStringiSOFT =
+        (LPALGETSTRINGISOFT)alGetProcAddress("alGetStringiSOFT");
+    if (!p_alGetStringiSOFT)
+        return;
+    const ALint count = alGetInteger(AL_NUM_RESAMPLERS_SOFT);
+    for (size_t p = 0; p < sizeof(kPreferred) / sizeof(kPreferred[0]); p++) {
+        for (ALint i = 0; i < count; i++) {
+            const ALchar* name = p_alGetStringiSOFT(AL_RESAMPLER_NAME_SOFT, i);
+            if (name && strcmp(name, kPreferred[p]) == 0) {
+                alSourcei(source, AL_SOURCE_RESAMPLER_SOFT, i);
+                eprintinfo("XA: resampler '%s' (index %d)\n", name, (int)i);
+                return;
+            }
+        }
+    }
+#else
+    (void)source;
+#endif
+}
+
 extern "C" void PsyX_XA_Init(void)
 {
     if (g_xa.initialized) return;
     alGenSources(1, &g_xa.source);
     alGenBuffers(kRingBuffers, g_xa.buffers);
     alSourcei(g_xa.source, AL_SOURCE_RELATIVE, AL_TRUE);
+    /* XA is a finished stereo mix, not a positioned sound: route its channels
+     * straight to the matching output channels. Left to the normal path it is
+     * treated as a stereo source to be spatialised, which on a device whose
+     * driver auto-enables HRTF convolves the music with head-related filters.
+     * Measured broadband level effect on a plain stereo device: none. */
+    if (alIsExtensionPresent("AL_SOFT_direct_channels"))
+        alSourcei(g_xa.source, AL_DIRECT_CHANNELS_SOFT, AL_TRUE);
+    /* XA sectors decode at 37800 Hz and OpenAL resamples them to the device
+     * rate. The default resampler does not band-limit for the ratio, which
+     * both rolls off content below the source's 18.9 kHz Nyquist and mirrors
+     * energy back above it. */
+    PsyX_XA_SelectResampler(g_xa.source);
     alSourcef(g_xa.source, AL_GAIN,
               g_xa.forced_gain >= 0.0f ? g_xa.forced_gain : g_xa.gain);
     alSourcef(g_xa.source, AL_PITCH, 1.0f);
@@ -251,6 +402,7 @@ extern "C" void PsyX_XA_Start(int sector, int file, int chan)
     if (!g_xa.initialized) PsyX_XA_Init();
     PsyX_XA_Stop();
     g_xa.playhead    = sector;
+    zigzag_reset();
     g_xa.filter_file = file;
     g_xa.filter_chan = chan;
     g_xa.hist1[0] = g_xa.hist1[1] = 0;
@@ -294,6 +446,7 @@ extern "C" void PsyX_XA_ForceGain(float linear_gain)
         alSourcef(g_xa.source, AL_GAIN, g);
     }
 }
+
 
 extern "C" void PsyX_XA_Pump(int maxSectors)
 {
@@ -362,7 +515,22 @@ extern "C" void PsyX_XA_Pump(int maxSectors)
          * across sample-rate changes (rare). */
         ALenum fmt = (channels == 2) ? AL_FORMAT_STEREO16 : AL_FORMAT_MONO16;
         ALuint b = g_xa.buffers[free_slot];
-        alBufferData(b, fmt, pcm_accum, pcm_used * sizeof(int16_t), sample_rate);
+
+        /* 37800 Hz is resampled here with the CD decoder's own filter and
+         * queued at 44100 so the backend has no conversion left to do. The
+         * half-rate 18900 Hz case has a different (and per psx-spx less
+         * settled) response and is left to the backend; Spyro has not been
+         * observed to use it. */
+        if (sample_rate == 37800) {
+            /* 7 out per 6 in, plus a frame of slack. */
+            static int16_t zz_out[8192 * 2 * 7 / 6 + 16];
+            int zz_used = 0;
+            for (int f = 0; f + channels <= pcm_used; f += channels)
+                zz_used += zigzag_push(pcm_accum + f, channels, zz_out + zz_used);
+            alBufferData(b, fmt, zz_out, zz_used * sizeof(int16_t), 44100);
+        } else {
+            alBufferData(b, fmt, pcm_accum, pcm_used * sizeof(int16_t), sample_rate);
+        }
         alSourceQueueBuffers(g_xa.source, 1, &b);
         g_xa.buf_in_use[free_slot] = true;
         pcm_used = 0;

@@ -526,6 +526,24 @@ static int16_t   s_capRing[SPUAL_CAP_FRAMES * 2];
 static int       s_capHead = 0, s_capTail = 0, s_capCount = 0;
 static SDL_Mutex* s_capMutex = NULL;
 static unsigned long long s_capProduced = 0, s_capDropped = 0;
+/* SPU main volume (SPU_COMMON_MVOLL/R). Hardware applies it to the summed
+ * mix -- voices and CD/XA input alike -- after per-voice volumes. PsyCross
+ * renders each voice as its own OpenAL source, so it is folded into every
+ * voice's gain instead. Spyro drives both channels together; a scalar is
+ * exact for that and keeps it independent of the panning path. */
+static float s_spuMasterGain = 1.0f;
+
+extern "C" void PsyX_SPUAL_SetMasterVolume(float linear_gain)
+{
+	if (linear_gain < 0.0f) linear_gain = 0.0f;
+	s_spuMasterGain = linear_gain;
+}
+
+extern "C" float PsyX_SPUAL_GetMasterVolume(void)
+{
+	return s_spuMasterGain;
+}
+
 ALuint		g_ALEffectSlots[2];
 int			g_currEffectSlotIdx = 0;
 ALuint		g_nAlReverbEffect = 0;
@@ -1270,15 +1288,31 @@ void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 		// device is attached.
 		if ((psxAttrib->mask & SPU_VOICE_VOLL) || (psxAttrib->mask & SPU_VOICE_VOLR))
 		{
-			float left_gain = (float)(voice->attr.volume.left) / (float)(16384);
-			float right_gain = (float)(voice->attr.volume.right) / (float)(16384);
+			/* Per-voice volume registers are sweep-capable: bit 15 selects
+			 * fixed-vs-sweep, and in fixed mode bits 0..14 carry the level
+			 * halved, which the SPU doubles when it applies the value. A
+			 * written 0x2FFF therefore reaches the mixer as 24574, so the
+			 * value seen here is full scale at 16384 — the register is not
+			 * pre-shifted by the library, the doubling happens in hardware.
+			 * (CD input volume is a plain multiplier with no sweep mode and
+			 * so is full scale at 32768; the two scales differ.)
+			 *
+			 * The SPU main volume, which hardware applies to the summed mix,
+			 * is folded in here because each voice is its own OpenAL source.
+			 * Exact while main volume is set once with both channels equal,
+			 * as this game does; a title that ramped it mid-note would leave
+			 * already-playing voices on a stale gain until their next
+			 * attribute write, and per-channel differences are averaged. */
+			float left_gain = (float)(voice->attr.volume.left) / 16384.0f;
+			float right_gain = (float)(voice->attr.volume.right) / 16384.0f;
 			if (left_gain > 1.0f) left_gain = 1.0f;
 			if (right_gain > 1.0f) right_gain = 1.0f;
 			float pan = (acosf(left_gain) + asinf(right_gain)) / ((float)(M_PI));
 			pan = 2.0f * pan - 1.0f;
 			pan = pan * 0.5f;
 			alSource3f(alSource, AL_POSITION, pan * STEREO_FACTOR, 0, -sqrtf(1.0f - pan * pan));
-			alSourcef(alSource, AL_GAIN, (left_gain + right_gain) * 0.5f);
+			alSourcef(alSource, AL_GAIN,
+			          (left_gain + right_gain) * 0.5f * s_spuMasterGain);
 		}
 		if (psxAttrib->mask & SPU_VOICE_PITCH)
 		{
@@ -1470,6 +1504,28 @@ extern "C" int PsyX_SPUAL_CaptureDrain(int16_t* out, int max_frames)
 	}
 	SDL_UnlockMutex(s_capMutex);
 	return drained;
+}
+
+/* Capture-ring accounting. The ring drops its oldest frames when the consumer
+ * falls behind (see the producer above), which silently time-compresses the
+ * recorded audio track. Without these counters a short recording is
+ * indistinguishable from a correct one, so the host reports them when a
+ * capture stops. */
+/* Zero the ring accounting. The host calls this when it discards the pre-roll
+ * backlog at encoder start: frames dropped before the recording begins are
+ * expected, and counting them would mask the drops that actually corrupt a
+ * stream. */
+extern "C" void PsyX_SPUAL_CaptureResetStats(void)
+{
+	s_capProduced = 0;
+	s_capDropped = 0;
+}
+
+extern "C" void PsyX_SPUAL_CaptureStats(unsigned long long* produced,
+                                        unsigned long long* dropped)
+{
+	if (produced) *produced = s_capProduced;
+	if (dropped)  *dropped  = s_capDropped;
 }
 
 /* 1 if loopback capture is live (host should pull audio), else 0. */

@@ -45,6 +45,18 @@ extern void PsyX_SPUAL_TickEnvelope(int samples);
 // loopback capture is live. Both return 0 while capture is inactive.
 extern int PsyX_SPUAL_CaptureDrain(short* out, int max_frames);
 extern int PsyX_SPUAL_CaptureActive(void);
+// Frames pushed into / discarded from the capture ring. A non-zero dropped
+// count means the recorded audio is time-compressed and must not be trusted
+// for timing or level comparisons.
+extern void PsyX_SPUAL_CaptureStats(unsigned long long* produced,
+                                    unsigned long long* dropped);
+// Zero the counters; call when discarding the pre-roll backlog at capture start.
+extern void PsyX_SPUAL_CaptureResetStats(void);
+
+// SPU main volume (SPU_COMMON_MVOLL/R), linear 0..1. Hardware applies it to
+// the summed mix, so it multiplies every voice gain and the XA stream gain.
+extern void PsyX_SPUAL_SetMasterVolume(float linear_gain);
+extern float PsyX_SPUAL_GetMasterVolume(void);
 
 /* SPU state-export (used by openpete save states) — deterministic
  * per-voice mirror (+ transfer/alloc cursors) and the SPU sample RAM.
