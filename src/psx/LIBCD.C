@@ -33,12 +33,25 @@ typedef struct _VFILE
 	size_t		size;
 } VFILE;
 
+static void (*g_memWaitCb)(size_t begin_offset, size_t end_offset) = NULL;
+
+extern "C" void PsyX_CDFS_SetMemWait(void (*cb)(size_t begin_offset, size_t end_offset))
+{
+	g_memWaitCb = cb;
+}
+
 size_t vfread(void* _Buffer, size_t _ElementSize, size_t _ElementCount, VFILE* _Stream)
 {
 	if (_Stream->fp)
 		return fread(_Buffer, _ElementSize, _ElementCount, _Stream->fp);
 
 	size_t num_to_read = _ElementSize * _ElementCount;
+
+	if (g_memWaitCb)
+	{
+		size_t at = (size_t)(_Stream->curPtr - _Stream->basePtr);
+		g_memWaitCb(at, at + num_to_read);
+	}
 
 	if ((_Stream->curPtr + num_to_read) - _Stream->basePtr > _Stream->size)
 	{

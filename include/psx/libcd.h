@@ -200,6 +200,12 @@ extern void PsyX_CDFS_Init(const char* imageFileName, int track /*= 0*/, int sec
 /* Initializes CD filesystem using ISO 9660 compliant stream */
 extern void PsyX_CDFS_Init_Mem(const u_int* data, int size, int track /*= 0*/, int sectorSize /*= 0*/);
 
+/* Memory-image wait hook: called before every read of the memory image with
+ * the byte range [begin, end) the read needs. A host that fills the image on
+ * a background thread blocks here until that range is resident. NULL = the
+ * whole image is already present (default). */
+extern void PsyX_CDFS_SetMemWait(void (*cb)(size_t begin_offset, size_t end_offset));
+
 void	StSetRing(u_int *ring_addr,u_int ring_size);
 void	StClearRing(void);
 void	StUnSetRing(void);
