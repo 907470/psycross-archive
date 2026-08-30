@@ -253,6 +253,24 @@ extern void PsyX_Sys_DoPollEvent(void);
 extern void PsyX_Sys_HandleEvent(void* sdl_event);
 extern void PsyX_Pad_InternalPadUpdates(void);
 
+/* SDL_Gamepad* bound to a pad slot, as void* (keeps this header SDL-free).
+ * NULL when the slot has no open controller. The handles are owned by the
+ * controller-added / -removed handlers, so a host driving the actuators asks
+ * for the pointer here rather than keeping its own notion of which pad is
+ * player one. */
+extern void* PsyX_Pad_GetGamepad(int slot);
+
+/* Actuator-buffer registration hook.
+ *
+ * Real PSYQ libpad treats PadSetAct as a REGISTRATION: the game hands over the
+ * address of its actuator buffer once, and libpad ships that buffer's bytes to
+ * the pad every vsync. Installing this hook moves the per-vsync half onto the
+ * host and makes PadSetAct the registration it is supposed to be. Left NULL,
+ * PadSetAct keeps its historical one-shot behaviour (reading whatever the
+ * buffer happens to hold at call time). */
+typedef void (*PsyX_Pad_ActuatorRegisterFn)(int slot, unsigned char* table, int len);
+extern PsyX_Pad_ActuatorRegisterFn g_PsyX_Pad_ActuatorRegister;
+
 /* Returns keyboard mapping index */
 extern int PsyX_LookupKeyboardMapping(const char* str, int default_value);
 

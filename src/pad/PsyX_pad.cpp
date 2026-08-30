@@ -693,3 +693,25 @@ void PsyX_Pad_Vibrate(int mtap, int slot, unsigned char* table, int len)
 
 	SDL_RumbleGamepad(controller->gc, freq_low, freq_high, 200);
 }
+
+/* openpete: set by the host to take ownership of the actuator path. NULL
+ * leaves PadSetAct with its historical one-shot behaviour. */
+extern "C" PsyX_Pad_ActuatorRegisterFn g_PsyX_Pad_ActuatorRegister = NULL;
+
+/* openpete: the SDL handle bound to a pad slot.
+ *
+ * The host drives the actuators itself (libpad registers a buffer and the host
+ * ships it every tick — see core/runtime/host_rumble.c), but the handle stays
+ * owned here, where the controller-added / -removed events already maintain
+ * the slot mapping, the cold-plug enumeration and the hotplug re-claim. Handing
+ * out the pointer keeps one notion of "which pad is player one" instead of
+ * growing a second, subtly different one on the host side.
+ *
+ * void* so PsyX_pad.h stays free of an SDL dependency for its C callers. */
+extern "C" void* PsyX_Pad_GetGamepad(int slot)
+{
+	if (slot < 0 || slot >= MAX_CONTROLLERS)
+		return NULL;
+
+	return (void*)g_controllers[slot].gc;
+}

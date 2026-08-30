@@ -97,12 +97,31 @@ int PadSetMainMode(int socket, int offs, int lock)
 	return 0;
 }
 
+/* Real PSYQ libpad treats this as a REGISTRATION, not a command: the game
+ * hands over the address of its actuator buffer once, and libpad reads that
+ * buffer and ships its bytes to the pad every vsync from then on. Games rely
+ * on it — Spyro calls PadSetAct exactly once, at boot, and afterwards only
+ * writes new bytes into the buffer it registered.
+ *
+ * Reading the bytes here instead (the historical implementation, still the
+ * fallback below) therefore captures whatever the buffer held at registration
+ * time, which for a game that registers before it has anything to say is
+ * {0, 0} — one zero-amplitude command, and silence forever after.
+ *
+ * With a host hook installed, ownership of the per-vsync half moves to the
+ * host and this becomes the registration libpad always was. */
 void PadSetAct(int port, unsigned char* table, int len)
 {
 	int mtap, slot;
 
 	mtap = port & 3;
 	slot = (mtap * 2) + (port >> 4) & 1;
+
+	if (g_PsyX_Pad_ActuatorRegister)
+	{
+		g_PsyX_Pad_ActuatorRegister(slot, table, len);
+		return;
+	}
 
 	PsyX_Pad_Vibrate(mtap, slot, table, len);
 }
