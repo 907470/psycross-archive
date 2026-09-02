@@ -74,6 +74,41 @@ extern int PsyX_SPUAL_RestoreState(const void* src, unsigned int size);
 extern int PsyX_SPUAL_RestoreStateEx(const void* src, unsigned int size,
                                      int quiet_al);
 extern unsigned int PsyX_SPUAL_MemSize(void);
+
+/* Host-side sample tools over caller-owned SPU-ADPCM bytes: the voice
+ * path's own END-flag walk and decoder. Length = bytes up to and
+ * including the first END-flagged 16-byte block (max_bytes rounded down
+ * to a block when none is found). Decode writes 28 samples per block
+ * up to the END block into `out` (size it as (bytes/16)*28) and reports
+ * the loop window in samples (loop_len 0 = one-shot). */
+/* Read-only view of SPU sample RAM (512 KB): what a voice keyed at
+ * `addr` decodes. Host consumers hash/identify samples through it. */
+extern const u_char* PsyX_SPUAL_MemPtr(unsigned int* size_out);
+
+/* Sample override (see PsyX_SPUAL_SetSampleOverride). The callback is
+ * invoked under the SPU mutex on the thread that keys the voice, with
+ * the stock decode already sized: `stock_samples` at 44.1 kHz, and
+ * whether the stock def loops. It must not block. Return 1 and fill
+ * `out` to substitute; `pcm` must stay valid until `done` (if set) is
+ * called, which happens right after the buffer upload. */
+typedef struct PsyX_SPUAL_SampleOverride {
+	const short* pcm;
+	int          count;       /* samples */
+	unsigned int rate;        /* Hz the PCM is played at (AL buffer rate) */
+	int          loop_start;  /* samples; loop_len 0 = no window of its own */
+	int          loop_len;
+	int          truncated;   /* set by PsyCross when count was cut to stock */
+	void       (*done)(struct PsyX_SPUAL_SampleOverride*);
+	void*        user;
+} PsyX_SPUAL_SampleOverride;
+typedef int (*PsyX_SPUAL_SampleOverrideFn)(int voice, unsigned int addr,
+                                           int stock_samples, int stock_loops,
+                                           PsyX_SPUAL_SampleOverride* out);
+extern void PsyX_SPUAL_SetSampleOverride(PsyX_SPUAL_SampleOverrideFn fn);
+
+extern int PsyX_SPUAL_SampleByteLength(const u_char* adpcm, int max_bytes);
+extern int PsyX_SPUAL_DecodeSample(const u_char* adpcm, int bytes, short* out,
+                                   int* loop_start, int* loop_len);
 extern int PsyX_SPUAL_SnapshotMem(void* dst, unsigned int size);
 extern int PsyX_SPUAL_RestoreMem(const void* src, unsigned int size);
 

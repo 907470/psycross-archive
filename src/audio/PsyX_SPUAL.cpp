@@ -505,6 +505,24 @@ ALCdevice*	g_ALCdevice = NULL;
 ALCcontext* g_ALCcontext = NULL;
 int			g_SPUMuted = 0;
 
+/* Sample override: a host callback consulted by UpdateVoiceSample in
+ * place of the SPU-RAM decode. It sits strictly below the voice's attr
+ * mirror — the one-shot duration scan, the ADSR and the key-status
+ * report all keep running on the stock addr/pitch — so only the audible
+ * PCM changes. */
+static PsyX_SPUAL_SampleOverrideFn s_sampleOverride = NULL;
+
+extern "C" void PsyX_SPUAL_SetSampleOverride(PsyX_SPUAL_SampleOverrideFn fn)
+{
+	s_sampleOverride = fn;
+}
+
+extern "C" const u_char* PsyX_SPUAL_MemPtr(unsigned int* size_out)
+{
+	if (size_out) *size_out = SPU_REALMEMSIZE;
+	return s_SpuMemory.samplemem;
+}
+
 /* --- Audio capture (OpenAL loopback). Enabled by g_psyx_audioCaptureMode,
  *     set by the host (openpete) before PsyX_SPUAL_InitSound, so ONLY
  *     recording sessions switch to a loopback device — normal playback keeps
@@ -1035,17 +1053,43 @@ static int decodeSound(u_char* iData, int soundSize, short* oData, int* loopStar
 // Byte length of the ADPCM sample starting at `addr`: up to and including
 // the first END-flagged (LoopEnd) block, capped at `max_bytes` for samples
 // with no terminator (e.g. key-on into uninitialized SPU RAM).
-static int SPUAL_SampleByteLength(u_int addr, int max_bytes)
+static int SPUAL_SampleByteLengthAt(const u_char* p, int max_bytes)
 {
 	int len = 0;
 	while (len + 16 <= max_bytes)
 	{
-		u_char flags = s_SpuMemory.samplemem[addr + len + 1];
+		u_char flags = p[len + 1];
 		len += 16;
 		if (flags & 0x01) // LoopEnd
 			break;
 	}
 	return len;
+}
+
+static int SPUAL_SampleByteLength(u_int addr, int max_bytes)
+{
+	return SPUAL_SampleByteLengthAt(s_SpuMemory.samplemem + addr, max_bytes);
+}
+
+// Host-side sample walk + decode over caller-owned ADPCM bytes (a WAD
+// blob, or a copy of SPU RAM). The same walk and decoder the voice path
+// uses, so a host consumer sizes and hears a sample exactly as key-on
+// does. Return of the length walk: bytes up to and including the first
+// END-flagged block, or max_bytes rounded down to a block when no END
+// was found (caller distinguishes by checking the final block's flag).
+extern "C" int PsyX_SPUAL_SampleByteLength(const u_char* adpcm, int max_bytes)
+{
+	return SPUAL_SampleByteLengthAt(adpcm, max_bytes);
+}
+
+extern "C" int PsyX_SPUAL_DecodeSample(const u_char* adpcm, int bytes, short* out,
+                                       int* loop_start, int* loop_len)
+{
+	int ls = 0, ll = 0;
+	int n = decodeSound((u_char*)adpcm, bytes, out, &ls, &ll, 1);
+	if (loop_start) *loop_start = ls;
+	if (loop_len) *loop_len = ll;
+	return n;
 }
 
 static void UpdateVoiceSample(SPUALVoice* voice)
@@ -1067,8 +1111,9 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 	alSource = voice->alSource;
 	alBuffer = voice->alBuffer;
 
-	if (alSource == AL_NONE)
-		return;
+	/* No device (headless without capture): the decode and the override
+	 * consult below still run — the sfx pack's identity and verification
+	 * live there — only the AL upload is skipped. */
 
 	loopStart = 0;
 	loopLen = 0;
@@ -1098,6 +1143,52 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 	}
 
 	if (count == 0)
+		return;
+
+	/* Override: the callback answers with PCM at its own rate. The
+	 * buffer rate carries the pitch relationship (the pitch write stays
+	 * attr.pitch/4096); the PCM is cut to the stock sample's wall
+	 * duration so a longer replacement cannot ring past the end the
+	 * guest is told about. Loop verdict: the stock def decides whether
+	 * the voice loops; a replacement that carries its own loop window
+	 * uses it, otherwise the whole buffer loops. */
+	if (s_sampleOverride)
+	{
+		PsyX_SPUAL_SampleOverride ov;
+		memset(&ov, 0, sizeof ov);
+		int vi = (int)(voice - g_SpuVoices);
+		if (s_sampleOverride(vi, voice->attr.addr, count, loopLen > 0, &ov) &&
+		    ov.pcm && ov.count > 0 && ov.rate > 0)
+		{
+			long long max_samples = ((long long)count * ov.rate + 44099) / 44100;
+			int use = ov.count;
+			if (use > max_samples) { use = (int)max_samples; ov.truncated = 1; }
+			if (alSource == AL_NONE)
+			{
+				if (ov.done) ov.done(&ov);
+				return;
+			}
+			alSourcei(alSource, AL_BUFFER, 0);
+			alBufferData(alBuffer, AL_FORMAT_MONO16, ov.pcm, use * (int)sizeof(short), (ALsizei)ov.rate);
+			if (loopLen > 0)
+			{
+				if (ov.loop_len > 0 && ov.loop_start >= 0 &&
+				    ov.loop_start + ov.loop_len <= use)
+				{
+					int sampleOffs[] = { ov.loop_start, ov.loop_start + ov.loop_len };
+					alBufferiv(alBuffer, AL_LOOP_POINTS_SOFT, sampleOffs);
+				}
+				alSourcei(alSource, AL_LOOPING, AL_TRUE);
+			}
+			else
+				alSourcei(alSource, AL_LOOPING, AL_FALSE);
+			alSourcei(alSource, AL_BUFFER, alBuffer);
+			if (ov.done) ov.done(&ov);
+			return;
+		}
+	}
+
+	if (alSource == AL_NONE)
 		return;
 
 #if 0	// sample test
@@ -1358,17 +1449,19 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 			SPUAL_Voice_EnvKeyOff(voice);
 		}
 
-		if (alSource == AL_NONE)
-			continue;
-
+		/* A voice with no source (headless, no device) still runs the
+		 * decode + override consult on key-on: the sfx pack's identity,
+		 * verification and counters live there and must not depend on
+		 * an audio device existing. Only the AL calls are gated. */
 		if (on_off && !g_SPUMuted)
 		{
-			alSourceStop(alSource);
+			if (alSource != AL_NONE)
+				alSourceStop(alSource);
 			UpdateVoiceSample(voice);
-
-			alSourcePlay(alSource);
+			if (alSource != AL_NONE)
+				alSourcePlay(alSource);
 		}
-		else
+		else if (alSource != AL_NONE)
 		{
 			alSourceStop(alSource);
 		}
