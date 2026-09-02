@@ -97,10 +97,16 @@ typedef struct PsyX_SPUAL_SampleOverride {
 	unsigned int rate;        /* Hz the PCM is played at (AL buffer rate) */
 	int          loop_start;  /* samples; loop_len 0 = no window of its own */
 	int          loop_len;
-	int          truncated;   /* set by PsyCross when count was cut to stock */
+	int          flat;        /* in: pin playback to `rate` — ignore the game's
+	                           * pitch writes for this key-on (audible only) */
+	int          rings_out;   /* out: the file outlasts the stock sample; when
+	                           * the game keys the voice off at the stock end,
+	                           * the tail keeps playing on an orphan source */
 	void       (*done)(struct PsyX_SPUAL_SampleOverride*);
 	void*        user;
 } PsyX_SPUAL_SampleOverride;
+/* Silence every ring-out tail now (level load, mute). */
+extern void PsyX_SPUAL_StopOrphans(void);
 typedef int (*PsyX_SPUAL_SampleOverrideFn)(int voice, unsigned int addr,
                                            int stock_samples, int stock_loops,
                                            PsyX_SPUAL_SampleOverride* out);

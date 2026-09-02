@@ -409,6 +409,14 @@ typedef struct
 	// output samples scaled by pitch. Looping samples (loop_end+
 	// loop_repeat) leave one_shot_samples_remaining == -1.
 	int32_t one_shot_samples_remaining; // -1 = looping / no auto-off
+
+	// Sample override (host replacement PCM) bookkeeping — audible-only
+	// state, never snapshotted: whether the last key-on played an
+	// override that outlasts the stock sample (its tail may ring out on
+	// an orphan source when the game keys off at the stock end), and
+	// whether the game's pitch writes are being ignored for this play.
+	int override_rings_out;
+	int pitch_pinned;
 } SPUALVoice;
 
 const int s_spuVoiceCount = 24;
@@ -515,6 +523,60 @@ static PsyX_SPUAL_SampleOverrideFn s_sampleOverride = NULL;
 extern "C" void PsyX_SPUAL_SetSampleOverride(PsyX_SPUAL_SampleOverrideFn fn)
 {
 	s_sampleOverride = fn;
+}
+
+/* Ring-out tails. A replacement longer than the stock sample must not
+ * change when the game learns the sound ended (that tick is game state),
+ * but nothing says the ear has to stop hearing it: on the game's key-off
+ * at the stock end the voice hands its playing source to this pool and
+ * takes a fresh one, so the tail finishes on its own while the voice is
+ * free for the game's next sound. A deliberate key-off (the sample had
+ * not expired) stops the sound as always. */
+#define SPUAL_ORPHANS 8
+static struct { ALuint src, buf; } s_orphans[SPUAL_ORPHANS];
+static int s_orphanInit = 0;
+static unsigned s_orphanNext = 0;
+
+static void SPUAL_OrphansInit(void)
+{
+	if (s_orphanInit) return;
+	for (int i = 0; i < SPUAL_ORPHANS; i++)
+	{
+		alGenSources(1, &s_orphans[i].src);
+		alGenBuffers(1, &s_orphans[i].buf);
+#ifdef AL_SOFT_source_resampler
+		alSourcei(s_orphans[i].src, AL_SOURCE_RESAMPLER_SOFT, 2);
+#endif
+		alSourcei(s_orphans[i].src, AL_SOURCE_RELATIVE, AL_TRUE);
+	}
+	s_orphanInit = 1;
+}
+
+/* Hand the voice's playing source to the pool and give it the pool
+ * entry's idle one (state and bindings are per-source, so swapping the
+ * ids is the whole handoff). */
+static void SPUAL_OrphanVoice(SPUALVoice* v)
+{
+	if (!s_orphanInit || v->alSource == AL_NONE) return;
+	int pick = -1;
+	for (int i = 0; i < SPUAL_ORPHANS; i++)
+	{
+		ALint st = AL_STOPPED;
+		alGetSourcei(s_orphans[i].src, AL_SOURCE_STATE, &st);
+		if (st != AL_PLAYING) { pick = i; break; }
+	}
+	if (pick < 0) { pick = (int)(s_orphanNext++ % SPUAL_ORPHANS); alSourceStop(s_orphans[pick].src); }
+	alSourcei(s_orphans[pick].src, AL_BUFFER, 0);
+	ALuint ts = s_orphans[pick].src, tb = s_orphans[pick].buf;
+	s_orphans[pick].src = v->alSource; s_orphans[pick].buf = v->alBuffer;
+	v->alSource = ts; v->alBuffer = tb;
+}
+
+extern "C" void PsyX_SPUAL_StopOrphans(void)
+{
+	if (!s_orphanInit) return;
+	for (int i = 0; i < SPUAL_ORPHANS; i++)
+		alSourceStop(s_orphans[i].src);
 }
 
 extern "C" const u_char* PsyX_SPUAL_MemPtr(unsigned int* size_out)
@@ -781,6 +843,7 @@ int PsyX_SPUAL_InitSound()
 #endif
 		alSourcei(voice->alSource, AL_SOURCE_RELATIVE, AL_TRUE);
 	}
+	SPUAL_OrphansInit();
 
 
 	InitOpenAlEffects();
@@ -1160,37 +1223,19 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 		if (s_sampleOverride(vi, voice->attr.addr, count, loopLen > 0, &ov) &&
 		    ov.pcm && ov.count > 0 && ov.rate > 0)
 		{
-			long long max_samples = ((long long)count * ov.rate + 44099) / 44100;
+			/* The full file is uploaded; if it outlasts the stock sample the
+			 * game still keys the voice off at the stock end (that tick is
+			 * game state) and the tail rings out on an orphan source. */
+			long long stock_wall = ((long long)count * ov.rate + 44099) / 44100;
+			ov.rings_out = (loopLen == 0 && ov.count > stock_wall) ? 1 : 0;
+			voice->override_rings_out = ov.rings_out;
+			voice->pitch_pinned = ov.flat ? 1 : 0;
 			int use = ov.count;
 			const short* pcm = ov.pcm;
-			if (use > max_samples) { use = (int)max_samples; ov.truncated = 1; }
 			if (alSource == AL_NONE)
 			{
 				if (ov.done) ov.done(&ov);
 				return;
-			}
-			if (ov.truncated && use > 0)
-			{
-				/* A cut mid-waveform clicks; fade the last ~4 ms into the
-				 * cut. The override PCM is the caller's cache, so the fade
-				 * goes through the decode scratch. */
-				if (use > s_decodeBufCap)
-				{
-					short* grown = (short*)realloc(s_decodeBuf, (size_t)use * sizeof(short));
-					if (grown) { s_decodeBuf = grown; s_decodeBufCap = use; }
-				}
-				if (use <= s_decodeBufCap)
-				{
-					memcpy(s_decodeBuf, ov.pcm, (size_t)use * sizeof(short));
-					int fade = (int)(ov.rate / 250u);
-					if (fade > use) fade = use;
-					for (int i = 0; i < fade; i++)
-					{
-						int k = use - fade + i;
-						s_decodeBuf[k] = (short)((int)s_decodeBuf[k] * (fade - i) / fade);
-					}
-					pcm = s_decodeBuf;
-				}
 			}
 			alSourcei(alSource, AL_BUFFER, 0);
 			alBufferData(alBuffer, AL_FORMAT_MONO16, pcm, use * (int)sizeof(short), (ALsizei)ov.rate);
@@ -1207,10 +1252,15 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 			else
 				alSourcei(alSource, AL_LOOPING, AL_FALSE);
 			alSourcei(alSource, AL_BUFFER, alBuffer);
+			/* flat: the file plays at its own rate whatever the game asks;
+			 * the pitch path below skips pinned voices until re-key. */
+			alSourcef(alSource, AL_PITCH, ov.flat ? 1.0f : (float)voice->attr.pitch / 4096.0f);
 			if (ov.done) ov.done(&ov);
 			return;
 		}
 	}
+	voice->override_rings_out = 0;
+	voice->pitch_pinned = 0;
 
 	if (alSource == AL_NONE)
 		return;
@@ -1275,6 +1325,8 @@ int PsyX_SPUAL_SetMute(int on_off)
 {
 	int old_state = g_SPUMuted;
 	g_SPUMuted = on_off;
+	if (on_off)
+		PsyX_SPUAL_StopOrphans();
 	return old_state;
 }
 
@@ -1437,8 +1489,11 @@ void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 				alSourcePause(alSource);
 			else if (voice->attr.pitch == 0 && state == AL_PAUSED)
 				alSourcePlay(alSource);
-			const float pitch = (float)(voice->attr.pitch) / 4096.0f;
-			alSourcef(alSource, AL_PITCH, pitch);
+			if (!voice->pitch_pinned)
+			{
+				const float pitch = (float)(voice->attr.pitch) / 4096.0f;
+				alSourcef(alSource, AL_PITCH, pitch);
+			}
 		}
 	}
 	SDL_UnlockMutex(g_SpuMutex);
@@ -1487,7 +1542,15 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 		}
 		else if (alSource != AL_NONE)
 		{
-			alSourceStop(alSource);
+			/* Key-off after the stock sample expired on its own (the
+			 * one-shot counter reached zero) is the game tidying up a
+			 * finished voice: a longer replacement keeps ringing on an
+			 * orphan. Key-off with samples remaining is a deliberate stop. */
+			if (voice->override_rings_out && voice->one_shot_samples_remaining == 0)
+				SPUAL_OrphanVoice(voice);
+			else
+				alSourceStop(alSource);
+			voice->override_rings_out = 0;
 		}
 	}
 	SDL_UnlockMutex(g_SpuMutex);
@@ -1826,8 +1889,12 @@ extern "C" int PsyX_SPUAL_RestoreStateEx(const void* src, unsigned int size,
 			if (v->alSource != AL_NONE)
 				alSourceStop(v->alSource);
 			v->sampledirty++;
+			v->override_rings_out = 0;
+			v->pitch_pinned = 0;
 		}
 	}
+	if (!quiet_al)
+		PsyX_SPUAL_StopOrphans();
 	SDL_UnlockMutex(g_SpuMutex);
 	return 0;
 }
