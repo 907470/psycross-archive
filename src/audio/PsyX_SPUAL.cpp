@@ -1162,14 +1162,38 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 		{
 			long long max_samples = ((long long)count * ov.rate + 44099) / 44100;
 			int use = ov.count;
+			const short* pcm = ov.pcm;
 			if (use > max_samples) { use = (int)max_samples; ov.truncated = 1; }
 			if (alSource == AL_NONE)
 			{
 				if (ov.done) ov.done(&ov);
 				return;
 			}
+			if (ov.truncated && use > 0)
+			{
+				/* A cut mid-waveform clicks; fade the last ~4 ms into the
+				 * cut. The override PCM is the caller's cache, so the fade
+				 * goes through the decode scratch. */
+				if (use > s_decodeBufCap)
+				{
+					short* grown = (short*)realloc(s_decodeBuf, (size_t)use * sizeof(short));
+					if (grown) { s_decodeBuf = grown; s_decodeBufCap = use; }
+				}
+				if (use <= s_decodeBufCap)
+				{
+					memcpy(s_decodeBuf, ov.pcm, (size_t)use * sizeof(short));
+					int fade = (int)(ov.rate / 250u);
+					if (fade > use) fade = use;
+					for (int i = 0; i < fade; i++)
+					{
+						int k = use - fade + i;
+						s_decodeBuf[k] = (short)((int)s_decodeBuf[k] * (fade - i) / fade);
+					}
+					pcm = s_decodeBuf;
+				}
+			}
 			alSourcei(alSource, AL_BUFFER, 0);
-			alBufferData(alBuffer, AL_FORMAT_MONO16, ov.pcm, use * (int)sizeof(short), (ALsizei)ov.rate);
+			alBufferData(alBuffer, AL_FORMAT_MONO16, pcm, use * (int)sizeof(short), (ALsizei)ov.rate);
 			if (loopLen > 0)
 			{
 				if (ov.loop_len > 0 && ov.loop_start >= 0 &&
