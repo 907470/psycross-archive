@@ -418,6 +418,28 @@ extern "C" void PsyX_Pad_DecodeP1(unsigned short* out_bits, unsigned char out_ax
 	}
 }
 
+/* See PsyX_public.h. Same merge as the slot decode, against a caller-supplied
+ * gamepad rather than one of the two tracked controller slots. */
+extern "C" void PsyX_Pad_DecodeGamepad(void* gamepad, unsigned short* out_bits,
+                                       unsigned char out_axes[4])
+{
+	PADRAW scratch;
+	memset(&scratch, 0, sizeof(scratch));
+
+	/* Assigns rather than accumulates, including its no-controller case
+	 * (0xFFFF buttons, axes 127), so a NULL gamepad needs no special path. */
+	PsyX_Pad_UpdateGameControllerInput((SDL_Gamepad*)gamepad, &scratch);
+
+	if (out_bits) *out_bits = *(u_short*)scratch.buttons;
+	if (out_axes)
+	{
+		out_axes[0] = scratch.analog[0];
+		out_axes[1] = scratch.analog[1];
+		out_axes[2] = scratch.analog[2];
+		out_axes[3] = scratch.analog[3];
+	}
+}
+
 void PsyX_Pad_InternalPadUpdates()
 {
 	PsyXController* controller;

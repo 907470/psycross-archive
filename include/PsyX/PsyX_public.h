@@ -181,6 +181,21 @@ extern void PsyX_Pad_GetLastP1Analog(unsigned char out_axes[4]);
  * Reads SDL state as of the last event pump; it does not pump. */
 extern void PsyX_Pad_DecodeP1(unsigned short* out_bits, unsigned char out_axes[4]);
 
+/* Decode ONE arbitrary gamepad into the same PSX pad bytes, for host-owned
+ * pad slots beyond the two this module tracks. `gamepad` is an SDL_Gamepad*
+ * (void* so the public header stays SDL-free, as PsyX_Pad_GetGamepad does);
+ * NULL yields the no-controller reading rather than leaving `out_*` untouched.
+ *
+ * Runs the same controller merge as the slot decode above, so a host-owned
+ * slot and a PsyCross slot cannot drift apart in mapping, deadzone or centre
+ * convention. Keyboard is deliberately NOT merged: the keyboard-as-pad source
+ * belongs to player 1, and folding it into every slot would press every
+ * player's buttons at once.
+ *
+ * Reads SDL state as of the last event pump; it does not pump. */
+extern void PsyX_Pad_DecodeGamepad(void* gamepad, unsigned short* out_bits,
+                                   unsigned char out_axes[4]);
+
 /* Raw P1 controller snapshot for host-side UI (the in-game settings menu), read
  * straight from SDL and INDEPENDENT of g_PsyX_Pad_InputOverride — the menu sets
  * that override to neutral to take input away from the game, which also makes
