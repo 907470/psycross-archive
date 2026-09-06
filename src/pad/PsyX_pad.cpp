@@ -140,24 +140,10 @@ int PsyX_Pad_InitSystem()
 		return 0;
 	}
 
-	// Add more controllers from a supplemental SDL_GameControllerDB.
-	// SDL3 already ships a large mapping database compiled in, so this
-	// file is optional — it only adds newer/obscure pads and user
-	// overrides. Prefer the copy next to the executable (SDL_GetBasePath)
-	// so it loads regardless of the launch CWD; fall back to a bare
-	// relative path for dev/portable runs that keep it in the CWD.
-	{
-		const char* base = SDL_GetBasePath();  // SDL3: static, do not free
-		int added = -1;
-		if (base != NULL)
-		{
-			char path[1024];
-			SDL_snprintf(path, sizeof(path), "%sgamecontrollerdb.txt", base);
-			added = SDL_AddGamepadMappingsFromFile(path);
-		}
-		if (added < 0)
-			SDL_AddGamepadMappingsFromFile("gamecontrollerdb.txt");
-	}
+	// Supplemental mapping databases are loaded by the host once this
+	// subsystem is up, so that a per-user file can outrank the shipped one.
+	// Loading any of them here would place them below the shipped copy and
+	// silently overwrite the user's own entry for the same pad.
 
 	/* Defensive cold-plug enumeration. SDL2 normally synthesizes
 	 * CONTROLLERDEVICEADDED for already-present devices when the
