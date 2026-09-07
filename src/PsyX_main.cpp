@@ -636,7 +636,7 @@ void PsyX_Log_Success(const char* fmt, ...)
 }
 
 
-void PsyX_Initialise(char* appName, int width, int height, int fullscreen, int startHidden)
+int PsyX_Initialise(char* appName, int width, int height, int fullscreen, int startHidden)
 {
 	char windowNameStr[128];
 
@@ -665,7 +665,7 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen, int s
 	{
 		eprinterr("Failed to initialise SDL\n");
 		PsyX_Shutdown();
-		return;
+		return 0;
 	}
 	g_psyx_core_up = 1;
 
@@ -680,21 +680,21 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen, int s
 	{
 		eprinterr("Failed to Intialise Window\n");
 		PsyX_Shutdown();
-		return;
+		return 0;
 	}
 
 	if (!PsyX_Sys_InitialiseCore())
 	{
 		eprinterr("Failed to Intialise Psy-X Core.\n");
 		PsyX_Shutdown();
-		return;
+		return 0;
 	}
 
 	if (!g_psyx_null_gpu && !GR_InitialisePSX())
 	{
 		eprinterr("Failed to Intialise PSX.\n");
 		PsyX_Shutdown();
-		return;
+		return 0;
 	}
 
 	PsyX_Sys_InitialiseInput();
@@ -705,6 +705,8 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen, int s
 	// disable cursor visibility
 	if (!g_psyx_null_gpu)
 		SDL_HideCursor();
+
+	return 1;
 }
 
 void PsyX_GetScreenSize(int* screenWidth, int* screenHeight)

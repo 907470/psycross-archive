@@ -221,7 +221,12 @@ extern int PsyX_Pad_GetRawP1(PsyX_RawPad* out);
 /* Usually called at the beginning of main function. `startHidden` creates
  * the window unmapped (no flash / focus-steal) — for headless / offscreen
  * runs that render but never present to a visible window. */
-extern void PsyX_Initialise(char* windowName, int screenWidth, int screenHeight, int fullscreen, int startHidden);
+/* Returns 1 once the window, core and PSX GPU state are up, 0 if any of
+ * them failed. A caller that ignores the result runs on without a GL
+ * context and dies at the first GR_ entry point instead of reporting
+ * why: SDL_Init(SDL_INIT_VIDEO) fails outright when no display is
+ * reachable, which is the usual case on a headless or ssh session. */
+extern int PsyX_Initialise(char* windowName, int screenWidth, int screenHeight, int fullscreen, int startHidden);
 
 /* Cleans all resources and closes open instances */
 extern void PsyX_Shutdown(void);

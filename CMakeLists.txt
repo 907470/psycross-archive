@@ -1,15 +1,15 @@
-file(GLOB_RECURSE PSYCROSS_SRCS_C
+file(GLOB_RECURSE PSYCROSS_SRCS_C CONFIGURE_DEPENDS
 	"*.c"
 )
 
 # The PSYQ surface lives under src/psx/*.C (uppercase) — Windows-derived
 # filenames the original devs never normalised. Linux globs are case-
 # sensitive, so we list those explicitly to avoid linker misses.
-file(GLOB_RECURSE PSYCROSS_SRCS_PSYQ
+file(GLOB_RECURSE PSYCROSS_SRCS_PSYQ CONFIGURE_DEPENDS
 	"src/psx/*.C"
 )
 
-file(GLOB_RECURSE PSYCROSS_SRCS_CPP
+file(GLOB_RECURSE PSYCROSS_SRCS_CPP CONFIGURE_DEPENDS
 	"*.cpp"
 )
 
