@@ -978,31 +978,6 @@ void PsyX_SwapWindowOnly()
 	GR_SwapWindow();
 }
 
-#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
-void PsyX_TakeScreenshot()
-{
-	u_char* pixels = (u_char*)malloc(g_windowWidth * g_windowHeight * 4);
-	
-#if defined(RENDERER_OGL)
-	glReadPixels(0, 0, g_windowWidth, g_windowHeight, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
-#elif defined(RENDERER_OGLES)
-	glReadPixels(0, 0, g_windowWidth, g_windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixels);	// FIXME: is that correct format?
-#endif
-
-#if defined(RENDERER_OGL)
-	const SDL_PixelFormat shotFmt = SDL_PIXELFORMAT_ARGB8888;  /* GL_BGRA bytes */
-#else
-	const SDL_PixelFormat shotFmt = SDL_PIXELFORMAT_ABGR8888;  /* GL_RGBA bytes */
-#endif
-	SDL_Surface* surface = SDL_CreateSurfaceFrom(g_windowWidth, g_windowHeight, shotFmt, pixels, g_windowWidth * 4);
-
-	SDL_SaveBMP(surface, "SCREENSHOT.BMP");
-	SDL_DestroySurface(surface);
-
-	free(pixels);
-}
-#endif
-
 void PsyX_Sys_DoDebugMouseMotion(int x, int y)
 {
 	if (g_dbg_gameDebugMouse)
@@ -1048,12 +1023,6 @@ void PsyX_Sys_DoDebugKeys(int nKey, char down)
 		case SDL_SCANCODE_F10:
 			eprintwarn("saving VRAM.TGA\n");
 			GR_SaveVRAM("VRAM.TGA", 0, 0, VRAM_WIDTH, VRAM_HEIGHT, 1);
-			break;
-#endif
-#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
-		case SDL_SCANCODE_F12:
-			eprintwarn("Saving screenshot...\n");
-			PsyX_TakeScreenshot();
 			break;
 #endif
 		case SDL_SCANCODE_F3:
