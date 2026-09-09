@@ -379,6 +379,17 @@ CdlLOC* CdIntToPos(int i, CdlLOC* p)
 	return p;
 }
 
+/* A position command with a NULL param operates on the location the drive
+ * already holds from a previous CdlSetloc rather than carrying one of its
+ * own. Recover that location from the image file position so the command
+ * is a no-op seek instead of a null dereference. */
+static int CdParamOrCurrentPos(u_char* param)
+{
+	if (param)
+		return CdPosToInt((CdlLOC*)param);
+	return (int)(vftell(&g_imageFile) / g_cdSectorSize);
+}
+
 int CdControl(u_char com, u_char * param, u_char * result)
 {
 	CdlLOC* cd = (CdlLOC*)param;
@@ -391,20 +402,21 @@ int CdControl(u_char com, u_char * param, u_char * result)
 	switch (com)
 	{
 	case CdlSetloc:
-		vfseek(&g_imageFile, CdPosToInt(cd)*g_cdSectorSize, SEEK_SET);
+		vfseek(&g_imageFile, CdParamOrCurrentPos(param)*g_cdSectorSize, SEEK_SET);
 		break;
 	case CdlReadS:
 	{
 		unsigned int filePos = vftell(&g_imageFile);
+		int target = CdParamOrCurrentPos(param);
 		
 		CdlLOC currentLoc;
 		CdIntToPos(filePos, &currentLoc);
 		
-		vfseek(&g_imageFile, CdPosToInt(cd) * g_cdSectorSize, SEEK_SET);
+		vfseek(&g_imageFile, target * g_cdSectorSize, SEEK_SET);
 		
-		g_cdCurrentSector = CdPosToInt(cd);
+		g_cdCurrentSector = target;
 		
-		if (cd->sector != currentLoc.sector)
+		if (cd && cd->sector != currentLoc.sector)
 			return 1;
 
 		break;
@@ -443,8 +455,7 @@ int CdControlB(u_char com, u_char* param, u_char* result)
 	{
 	case CdlSetloc:
 	{
-		CdlLOC* cd = (CdlLOC*)param;
-		vfseek(&g_imageFile, CdPosToInt(cd) * g_cdSectorSize, SEEK_SET);
+		vfseek(&g_imageFile, CdParamOrCurrentPos(param) * g_cdSectorSize, SEEK_SET);
 		readMode = RM_DATA;
 		ret = 1;
 		break;
@@ -465,9 +476,9 @@ int CdControlB(u_char com, u_char* param, u_char* result)
 	case CdlReadS:
 	case CdlReadN:
 	{
-		CdlLOC* cd = (CdlLOC*)param;
-		vfseek(&g_imageFile, CdPosToInt(cd) * g_cdSectorSize, SEEK_SET);
-		g_cdCurrentSector = CdPosToInt(cd);
+		int target = CdParamOrCurrentPos(param);
+		vfseek(&g_imageFile, target * g_cdSectorSize, SEEK_SET);
+		g_cdCurrentSector = target;
 		readMode = RM_DATA;
 		ret = 1;
 		break;
@@ -504,8 +515,7 @@ int CdControlF(u_char com, u_char * param)
 	{
 		case CdlSetloc:
 		{
-			CdlLOC* cd = (CdlLOC*)param;
-			vfseek(&g_imageFile, CdPosToInt(cd) * g_cdSectorSize, SEEK_SET);
+			vfseek(&g_imageFile, CdParamOrCurrentPos(param) * g_cdSectorSize, SEEK_SET);
 			break;
 		}
 		case CdlSetfilter:
@@ -524,8 +534,7 @@ int CdControlF(u_char com, u_char * param)
 		case CdlReadS:
 		{
 			// start reading sectors
-			CdlLOC* cd = (CdlLOC*)param;
-			_eCdControlF_ReadS(CdPosToInt(cd));
+			_eCdControlF_ReadS(CdParamOrCurrentPos(param));
 			
 			break;
 		}
