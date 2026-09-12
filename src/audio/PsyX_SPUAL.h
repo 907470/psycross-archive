@@ -48,6 +48,17 @@ extern int PsyX_SPUAL_CaptureActive(void);
 // Frames pushed into / discarded from the capture ring. A non-zero dropped
 // count means the recorded audio is time-compressed and must not be trusted
 // for timing or level comparisons.
+// SpuWrite re-sync accounting: voices rebuffered because a write landed in
+// their decode window (total since start; the voice mask of the last write).
+extern unsigned int PsyX_SPUAL_ResyncCount(void);
+extern unsigned int PsyX_SPUAL_LastWriteResyncMask(void);
+// Wall time of the last stop/rebuffer/play re-sync, microseconds (0 when the
+// last re-sync rewrote the buffer in place).
+extern unsigned int PsyX_SPUAL_LastResyncMicros(void);
+// Head replays that hit the walk bound or ran off SPU RAM (the countdown is
+// then left as it was).
+extern unsigned int PsyX_SPUAL_HeadBoundBreaks(void);
+
 extern void PsyX_SPUAL_CaptureStats(unsigned long long* produced,
                                     unsigned long long* dropped);
 // Zero the counters; call when discarding the pre-roll backlog at capture start.

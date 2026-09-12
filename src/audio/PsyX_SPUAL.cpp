@@ -417,6 +417,20 @@ typedef struct
 	// whether the game's pitch writes are being ignored for this play.
 	int override_rings_out;
 	int pitch_pinned;
+
+	// Decode window of the last walk, [decode_lo, decode_hi) bytes of SPU
+	// RAM: attr.addr to the END-flagged block the walk stopped at. A
+	// SpuWrite into it re-syncs the voice (SPUAL_ResyncVoicesFor): SPU RAM
+	// is the source of the sound, the OpenAL buffer a cache of it.
+	uint32_t decode_lo;
+	uint32_t decode_hi;
+	// 1 while the last upload came from the sample override: host PCM,
+	// not SPU RAM, so a SpuWrite never re-syncs it.
+	int override_active;
+	// Decoder samples the head has advanced since key-on, in 1/4096ths
+	// (each envelope sample adds attr.pitch; pitch 0 holds the head as the
+	// hardware does). Snapshotted with the voice.
+	int64_t consumed_dec_fp;
 } SPUALVoice;
 
 const int s_spuVoiceCount = 24;
@@ -502,11 +516,185 @@ static int32_t SPUAL_ScanOneShotSamples(uint32_t start_addr, uint16_t pitch)
 	return -1;
 }
 
+// Byte length of the ADPCM sample starting at `addr` (defined below with
+// the decoder).
+static int SPUAL_SampleByteLength(u_int addr, int max_bytes);
+static void SPUAL_ResyncVoicesFor(uint32_t lo, uint32_t hi);
+
+/* The decode window the head will cover from attr.addr: to the first
+ * END-flagged block, capped like the upload walk. Set at key-on and after
+ * every re-sync, with or without an audio device, since the SpuWrite
+ * overlap test that feeds the guest-visible countdown reads it. */
+static int SPUAL_WalkLength(uint32_t addr, int* loops)
+{
+	int avail = SPU_REALMEMSIZE - (int)addr;
+	if (avail < 0) avail = 0;
+	int in_bytes = avail ? SPUAL_SampleByteLength(addr, avail) : 0;
+	/* The walk stops at the first END block; a REPEAT bit there, or no END
+	 * inside the cap, means the head comes back through the repeat address. */
+	*loops = 1;
+	if (in_bytes >= 16)
+	{
+		uint8_t flags = s_SpuMemory.samplemem[addr + in_bytes - 16 + 1];
+		if (flags & 0x01)
+			*loops = (flags & 0x02) ? 1 : 0;
+	}
+	return in_bytes;
+}
+
+static int SPUAL_Voice_Head(const SPUALVoice* v, uint32_t* block_addr, uint32_t* in_block,
+                            uint32_t* repeat_out);
+
+static void SPUAL_Voice_SetWindow(SPUALVoice* v)
+{
+	int loops = 0;
+	int in_bytes = SPUAL_WalkLength(v->attr.addr, &loops);
+	uint32_t lo = v->attr.addr;
+	uint32_t hi = v->attr.addr + (uint32_t)in_bytes;
+	/* A looping voice also reads from its repeat address (the game's
+	 * SPU_VOICE_LSAX write, or the last LOOP START block the head passed)
+	 * when that lies outside the walk from the start address; the blocks
+	 * it reaches from there extend the window. */
+	uint32_t repeat = v->attr.loop_addr;
+	uint32_t hb, ib;
+	if (SPUAL_Voice_Head(v, &hb, &ib, &repeat) < 0)
+		repeat = v->attr.loop_addr;
+	if (loops && repeat < SPU_REALMEMSIZE && (repeat < lo || repeat >= hi))
+	{
+		int l2;
+		int n2 = SPUAL_WalkLength(repeat, &l2);
+		if (repeat < lo) lo = repeat;
+		if (repeat + (uint32_t)n2 > hi) hi = repeat + (uint32_t)n2;
+	}
+	v->decode_lo = lo;
+	v->decode_hi = hi;
+}
+
 static void SPUAL_Voice_KeyOn(SPUALVoice* v)
 {
 	SPUAL_Voice_EnvKeyOn(v);
 	v->one_shot_samples_remaining =
 		SPUAL_ScanOneShotSamples(v->attr.addr, v->attr.pitch);
+	v->consumed_dec_fp = 0;
+	v->override_active = 0;
+	SPUAL_Voice_SetWindow(v);
+}
+
+/* Replay the head from key-on over SPU RAM as it is now, following the
+ * block flags the way the hardware does (LOOP START sets the repeat
+ * address, END with REPEAT jumps to it, END without REPEAT ends the
+ * sample), to the block the voice is in after the decoder samples it has
+ * consumed. The first pass runs block by block; at the first repeat the
+ * cycle it closes is measured and the remaining samples are reduced
+ * modulo its length, so the walk is at most two passes long. Returns 1
+ * with the block address, the samples into it and the repeat address in
+ * force; 0 when the sample ended before now; -1 when a walk ran off the
+ * 512 KB (the hardware wraps there; not modelled) or exceeded the step
+ * bound. The replay reads today's flags for blocks the head passed under
+ * earlier content; a stream whose flags move between refills is not
+ * modelled. */
+static uint32_t s_headBoundBreaks = 0;
+
+static int SPUAL_Voice_Head(const SPUALVoice* v, uint32_t* block_addr, uint32_t* in_block,
+                            uint32_t* repeat_out)
+{
+	const int64_t MAX_STEPS = 3 * (SPU_REALMEMSIZE / 16);
+	uint64_t dec = (uint64_t)v->consumed_dec_fp / 4096ULL;
+	uint32_t addr = v->attr.addr;
+	uint32_t repeat = v->attr.loop_addr;
+	int64_t steps = 0;
+	int repeats = 0;
+	uint64_t dec_at_first_repeat = 0;
+	for (;;)
+	{
+		if (addr + 16 > SPU_REALMEMSIZE || steps++ > MAX_STEPS)
+		{
+			s_headBoundBreaks++;
+			return -1;
+		}
+		uint8_t flags = s_SpuMemory.samplemem[addr + 1];
+		if (flags & 0x04) repeat = addr;
+		if (dec < 28) break;
+		dec -= 28;
+		if (flags & 0x01)
+		{
+			if (!(flags & 0x02))
+				return 0;
+			/* The cycle is measured, not assumed: the samples between the
+			 * first and the second repeat are one pass over the blocks
+			 * every later pass reads (a LOOP START inside the pass moves
+			 * the repeat address the same way each time). */
+			if (repeats == 0)
+				dec_at_first_repeat = dec;
+			else if (repeats == 1)
+			{
+				uint64_t cycle = dec_at_first_repeat - dec;
+				if (cycle > 0)
+					dec %= cycle;
+			}
+			repeats++;
+			addr = repeat;
+			continue;
+		}
+		addr += 16;
+	}
+	*block_addr = addr;
+	*in_block = (uint32_t)dec;
+	if (repeat_out) *repeat_out = repeat;
+	return 1;
+}
+
+/* Re-derive the one-shot countdown from the head: walk on to the END the
+ * head will reach next. No REPEAT bit gives the remaining output samples
+ * at the current pitch, a REPEAT bit gives -1 (the voice loops). A write
+ * ahead of the head changes where the voice ends; a write behind it is
+ * met on the next pass. */
+static void SPUAL_Voice_RescanFromHead(SPUALVoice* v)
+{
+	const uint32_t pitch = v->attr.pitch;
+	uint32_t addr, in_block;
+	int head = SPUAL_Voice_Head(v, &addr, &in_block, NULL);
+	if (head < 0)
+		return; /* unknown: keep the countdown */
+	if (head == 0)
+	{
+		/* The new content ends the sample at a block the head has passed:
+		 * the hardware voice is off. The next envelope sample keys it off. */
+		v->one_shot_samples_remaining = 1;
+		return;
+	}
+	const int64_t MAX_STEPS = SPU_REALMEMSIZE / 16;
+	uint64_t ahead = 0;
+	int64_t steps = 0;
+	uint32_t a = addr;
+	for (;;)
+	{
+		if (a + 16 > SPU_REALMEMSIZE || steps++ > MAX_STEPS)
+		{
+			v->one_shot_samples_remaining = -1;
+			return;
+		}
+		uint8_t flags = s_SpuMemory.samplemem[a + 1];
+		ahead += 28;
+		if (flags & 0x01)
+		{
+			if (flags & 0x02)
+			{
+				v->one_shot_samples_remaining = -1;
+				return;
+			}
+			break;
+		}
+		a += 16;
+	}
+	if (pitch == 0)
+	{
+		v->one_shot_samples_remaining = -1; /* the head holds; the END is never reached */
+		return;
+	}
+	uint64_t out = ((ahead - in_block) * 4096ULL) / pitch;
+	if (out > 0x7FFFFFFFULL) out = 0x7FFFFFFFULL;
+	v->one_shot_samples_remaining = out > 0 ? (int32_t)out : 1;
 }
 
 ALCdevice*	g_ALCdevice = NULL;
@@ -945,6 +1133,11 @@ u_int PsyX_SPUAL_Write(u_char* addr, u_int size)
 
 	// simply copy to the writeptr
 	memcpy(s_SpuMemory.writeptr, addr, size);
+	/* The transfer address advances past the bytes moved, as the SPU's
+	 * does: consecutive writes after one SpuSetTransferStartAddr land one
+	 * after another. */
+	s_SpuMemory.writeptr += size;
+	SPUAL_ResyncVoicesFor((uint32_t)wptr_ofs, (uint32_t)wptr_ofs + size);
 
 #if 0 // BANK TEST
 	{
@@ -996,6 +1189,7 @@ u_int PsyX_SPUAL_Read(u_char* addr, u_int size)
 
 	// simply copy to the writeptr
 	memcpy(addr, s_SpuMemory.writeptr, size);
+	s_SpuMemory.writeptr += size;
 
 	return size;
 }
@@ -1155,14 +1349,54 @@ extern "C" int PsyX_SPUAL_DecodeSample(const u_char* adpcm, int bytes, short* ou
 	return n;
 }
 
+static int UpdateVoiceSampleEx(SPUALVoice* voice, int resync);
 static void UpdateVoiceSample(SPUALVoice* voice)
 {
-	// Decode scratch, grown on demand (guarded by g_SpuMutex like the
-	// rest of the voice state). Long one-shots — Spyro 1's intro
-	// cutscene soundtrack is a single ~490 KB sample, ~1.7 MB of PCM —
-	// exceed any fixed-size buffer worth keeping resident.
-	static short* s_decodeBuf = NULL;
-	static int s_decodeBufCap = 0; // in samples (shorts)
+	UpdateVoiceSampleEx(voice, 0);
+}
+
+/* Decode scratch, grown on demand (guarded by g_SpuMutex like the rest
+ * of the voice state). Long one-shots — Spyro 1's intro cutscene
+ * soundtrack is a single ~490 KB sample, ~1.7 MB of PCM — exceed any
+ * fixed-size buffer worth keeping resident. */
+static short* s_decodeBuf = NULL;
+static int s_decodeBufCap = 0; // in samples (shorts)
+
+/* Walk and decode the voice's sample from SPU RAM into s_decodeBuf. Returns
+ * the sample count (0: nothing to decode) and the loop window decodeSound
+ * found. Sets the voice's decode window as a side effect. */
+static int SPUAL_DecodeVoice(SPUALVoice* voice, int* loopStart, int* loopLen)
+{
+	*loopStart = 0;
+	*loopLen = 0;
+	/* Size the decode exactly: walk the block flags to the sample's END
+	 * marker first, then decode that window in full. The walk stops at
+	 * the 512 KB of real SPU RAM, the same cap as the voice's window, so
+	 * END-less garbage (uninitialized RAM) is bounded there too. */
+	int avail = SPU_REALMEMSIZE - (int)voice->attr.addr;
+	if (avail < 0) avail = 0;
+	int in_bytes = avail ? SPUAL_SampleByteLength(voice->attr.addr, avail) : 0;
+	int out_samples = (in_bytes / 16) * 28; // 28 samples per 16-byte block
+	if (out_samples > s_decodeBufCap)
+	{
+		short* grown = (short*)realloc(s_decodeBuf, out_samples * sizeof(short));
+		if (!grown)
+			return 0;
+		s_decodeBuf = grown;
+		s_decodeBufCap = out_samples;
+	}
+	if (out_samples == 0)
+		return 0;
+	return decodeSound(s_SpuMemory.samplemem + voice->attr.addr, in_bytes, s_decodeBuf, loopStart, loopLen, 1);
+}
+
+/* Decode the voice's sample from SPU RAM and upload it. resync=1 is the
+ * re-sync after a SpuWrite into the window: the override is not consulted
+ * (a voice it answered is never re-synced) and the caller restores the
+ * play position. Returns the decoded sample count, 0 when nothing was
+ * uploaded. */
+static int UpdateVoiceSampleEx(SPUALVoice* voice, int resync)
+{
 	int loopStart, loopLen, count;
 	ALuint alSource, alBuffer;
 
@@ -1170,6 +1404,7 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 	//	return;
 
 	voice->sampledirty = 0;
+	voice->override_active = 0;
 
 	alSource = voice->alSource;
 	alBuffer = voice->alBuffer;
@@ -1177,36 +1412,9 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 	/* No device (headless without capture): the decode and the override
 	 * consult below still run — the sfx pack's identity and verification
 	 * live there — only the AL upload is skipped. */
-
-	loopStart = 0;
-	loopLen = 0;
-
-	/* Size the decode exactly: walk the block flags to the sample's END
-	 * marker first, then decode that window in full. Real SPU RAM is
-	 * 512 KB, so no legitimate sample exceeds SPU_REALMEMSIZE — that cap
-	 * also bounds END-less garbage (uninitialized RAM) instead of letting
-	 * the decode run to the ~2 MB samplemem end. */
-	{
-		int avail = SPU_MEMSIZE - (int)voice->attr.addr;
-		if (avail > SPU_REALMEMSIZE) avail = SPU_REALMEMSIZE;
-		if (avail < 0) avail = 0;
-		int in_bytes = SPUAL_SampleByteLength(voice->attr.addr, avail);
-		int out_samples = (in_bytes / 16) * 28; // 28 samples per 16-byte block
-		if (out_samples > s_decodeBufCap)
-		{
-			short* grown = (short*)realloc(s_decodeBuf, out_samples * sizeof(short));
-			if (!grown)
-				return;
-			s_decodeBuf = grown;
-			s_decodeBufCap = out_samples;
-		}
-		if (out_samples == 0)
-			return;
-		count = decodeSound(s_SpuMemory.samplemem + voice->attr.addr, in_bytes, s_decodeBuf, &loopStart, &loopLen, 1);
-	}
-
+	count = SPUAL_DecodeVoice(voice, &loopStart, &loopLen);
 	if (count == 0)
-		return;
+		return 0;
 
 	/* Override: the callback answers with PCM at its own rate. The
 	 * buffer rate carries the pitch relationship (the pitch write stays
@@ -1215,7 +1423,7 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 	 * guest is told about. Loop verdict: the stock def decides whether
 	 * the voice loops; a replacement that carries its own loop window
 	 * uses it, otherwise the whole buffer loops. */
-	if (s_sampleOverride)
+	if (s_sampleOverride && !resync)
 	{
 		PsyX_SPUAL_SampleOverride ov;
 		memset(&ov, 0, sizeof ov);
@@ -1230,12 +1438,13 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 			ov.rings_out = (loopLen == 0 && ov.count > stock_wall) ? 1 : 0;
 			voice->override_rings_out = ov.rings_out;
 			voice->pitch_pinned = ov.flat ? 1 : 0;
+			voice->override_active = 1;
 			int use = ov.count;
 			const short* pcm = ov.pcm;
 			if (alSource == AL_NONE)
 			{
 				if (ov.done) ov.done(&ov);
-				return;
+				return use;
 			}
 			alSourcei(alSource, AL_BUFFER, 0);
 			alBufferData(alBuffer, AL_FORMAT_MONO16, pcm, use * (int)sizeof(short), (ALsizei)ov.rate);
@@ -1256,14 +1465,14 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 			 * the pitch path below skips pinned voices until re-key. */
 			alSourcef(alSource, AL_PITCH, ov.flat ? 1.0f : (float)voice->attr.pitch / 4096.0f);
 			if (ov.done) ov.done(&ov);
-			return;
+			return use;
 		}
 	}
 	voice->override_rings_out = 0;
 	voice->pitch_pinned = 0;
 
 	if (alSource == AL_NONE)
-		return;
+		return count;
 
 #if 0	// sample test
 	{
@@ -1319,6 +1528,94 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 
 	// set the buffer
 	alSourcei(alSource, AL_BUFFER, alBuffer);
+	return count;
+}
+
+/* SpuWrite re-sync: every voice whose envelope runs, whose sound comes
+ * from SPU RAM, and whose decode window meets the written bytes [lo, hi)
+ * is walked again from its head (the guest-visible countdown) and, when
+ * an OpenAL source is playing or paused, rebuffered from the new content
+ * and resumed at the sample it was at (a buffer cannot be replaced on a
+ * playing source; the samples before the written bytes decode to the
+ * same PCM). A voice with no source, or muted at key-on, keeps its
+ * bookkeeping exact and stays silent as before. */
+static unsigned int s_resyncCount = 0;
+static unsigned int s_lastWriteResyncMask = 0;
+static unsigned int s_lastResyncMicros = 0;   /* wall time of the last stop-to-play gap */
+
+static void SPUAL_ResyncVoicesFor(uint32_t lo, uint32_t hi)
+{
+	s_lastWriteResyncMask = 0;
+	if (!g_spuInit || hi <= lo)
+		return;
+	SDL_LockMutex(g_SpuMutex);
+	for (int i = 0; i < s_spuVoiceCount; i++)
+	{
+		SPUALVoice* v = &g_SpuVoices[i];
+		if (v->adsr_phase == PSYX_SPU_ENV_OFF)
+			continue;
+		if (v->decode_hi <= v->decode_lo || hi <= v->decode_lo || lo >= v->decode_hi)
+			continue;
+		SPUAL_Voice_RescanFromHead(v);
+		SPUAL_Voice_SetWindow(v);
+		ALuint src = v->alSource;
+		ALint state = AL_STOPPED;
+		ALfloat offset = 0.0f;
+		if (src != AL_NONE)
+		{
+			alGetSourcei(src, AL_SOURCE_STATE, &state);
+			/* The second offset carries the resampler's fractional position;
+			 * the integer sample offset drops it, up to one buffer sample
+			 * (two output samples at half pitch) per re-sync. */
+			alGetSourcef(src, AL_SEC_OFFSET, &offset);
+		}
+		/* A voice playing a sample override keeps its host PCM: the
+		 * replacement has no correspondence to the new bytes. */
+		if (src != AL_NONE && !v->override_active && (state == AL_PLAYING || state == AL_PAUSED))
+		{
+			/* A buffer cannot be replaced on a playing source: stop,
+			 * rebuffer, resume at the sample it was at. The samples before
+			 * the written bytes decode to the same PCM. */
+			const Uint64 t0 = SDL_GetPerformanceCounter();
+			alSourceStop(src);
+			int count = UpdateVoiceSampleEx(v, 1);
+			if (count > 0)
+			{
+				const ALfloat limit = (ALfloat)(count - 1) / 44100.0f;
+				if (offset > limit) offset = limit;
+				if (offset < 0.0f) offset = 0.0f;
+				alSourcef(src, AL_SEC_OFFSET, offset);
+				alSourcePlay(src);
+				if (state == AL_PAUSED)
+					alSourcePause(src);
+			}
+			s_lastResyncMicros = (unsigned int)((SDL_GetPerformanceCounter() - t0) * 1000000ULL /
+			                                    SDL_GetPerformanceFrequency());
+		}
+		s_resyncCount++;
+		s_lastWriteResyncMask |= 1u << i;
+	}
+	SDL_UnlockMutex(g_SpuMutex);
+}
+
+extern "C" unsigned int PsyX_SPUAL_ResyncCount(void)
+{
+	return s_resyncCount;
+}
+
+extern "C" unsigned int PsyX_SPUAL_LastWriteResyncMask(void)
+{
+	return s_lastWriteResyncMask;
+}
+
+extern "C" unsigned int PsyX_SPUAL_LastResyncMicros(void)
+{
+	return s_lastResyncMicros;
+}
+
+extern "C" unsigned int PsyX_SPUAL_HeadBoundBreaks(void)
+{
+	return s_headBoundBreaks;
 }
 
 int PsyX_SPUAL_SetMute(int on_off)
@@ -1439,13 +1736,26 @@ void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 			if (voice->attr.loop_addr != psxAttrib->loop_addr)
 				voice->sampledirty++;
 			voice->attr.loop_addr = psxAttrib->loop_addr;
+			/* The repeat address moves where a running voice's head goes
+			 * at its next END: re-derive the countdown and the window. */
+			if (voice->adsr_phase != PSYX_SPU_ENV_OFF)
+			{
+				SPUAL_Voice_RescanFromHead(voice);
+				SPUAL_Voice_SetWindow(voice);
+			}
 		}
 		if (psxAttrib->mask & SPU_VOICE_VOLL)
 			voice->attr.volume.left = psxAttrib->volume.left;
 		if (psxAttrib->mask & SPU_VOICE_VOLR)
 			voice->attr.volume.right = psxAttrib->volume.right;
 		if (psxAttrib->mask & SPU_VOICE_PITCH)
+		{
 			voice->attr.pitch = psxAttrib->pitch;
+			/* The countdown is output samples at the pitch in force: a
+			 * new pitch on a running voice moves the END in time. */
+			if (voice->adsr_phase != PSYX_SPU_ENV_OFF)
+				SPUAL_Voice_RescanFromHead(voice);
+		}
 
 		if (alSource == AL_NONE)
 			continue;
@@ -1487,7 +1797,7 @@ void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 			alGetSourcei(alSource, AL_SOURCE_STATE, &state);
 			if (psxAttrib->pitch == 0 && state == AL_PLAYING)
 				alSourcePause(alSource);
-			else if (voice->attr.pitch == 0 && state == AL_PAUSED)
+			else if (psxAttrib->pitch != 0 && state == AL_PAUSED)
 				alSourcePlay(alSource);
 			if (!voice->pitch_pinned)
 			{
@@ -1608,10 +1918,11 @@ void PsyX_SPUAL_TickEnvelope(int samples)
 			continue;
 		for (int s = 0; s < samples; s++)
 		{
+			v->consumed_dec_fp += v->attr.pitch;
 			// One-shot ADPCM auto-key-off: when output-sample countdown
 			// hits zero, force voice to Off (mirrors PSX SPU behavior on
 			// loop_end+!loop_repeat block).
-			if (v->one_shot_samples_remaining > 0)
+			if (v->one_shot_samples_remaining > 0 && v->attr.pitch != 0)
 			{
 				v->one_shot_samples_remaining--;
 				if (v->one_shot_samples_remaining == 0)
@@ -1811,6 +2122,7 @@ typedef struct
 	int16_t  adsr_volume;
 	PsyX_SPUEnvelope env;
 	int32_t  one_shot_samples_remaining;
+	int64_t  consumed_dec_fp;
 } SPUALVoiceState;
 
 typedef struct
@@ -1849,6 +2161,7 @@ extern "C" int PsyX_SPUAL_SnapshotState(void* dst, unsigned int size)
 		o->adsr_volume = v->adsr_volume;
 		o->env = v->env;
 		o->one_shot_samples_remaining = v->one_shot_samples_remaining;
+		o->consumed_dec_fp = v->consumed_dec_fp;
 	}
 	SDL_UnlockMutex(g_SpuMutex);
 	return 0;
@@ -1876,11 +2189,12 @@ extern "C" int PsyX_SPUAL_RestoreStateEx(const void* src, unsigned int size,
 		v->adsr_volume = o->adsr_volume;
 		v->env = o->env;
 		v->one_shot_samples_remaining = o->one_shot_samples_remaining;
-		/* Kill the audible half: the source is playing pre-restore
-		 * content (or nothing). sampledirty forces the next KeyOn to
-		 * re-upload from the (restored) sample RAM. A voice that was
-		 * sustaining at save time stays silent until its next KeyOn —
-		 * bookkeeping-exact, audibly conservative. */
+		v->consumed_dec_fp = o->consumed_dec_fp;
+		SPUAL_Voice_SetWindow(v);
+		/* The audible half: the source is playing pre-restore content (or
+		 * nothing). A voice whose envelope runs is re-uploaded from the
+		 * restored sample RAM and resumed at its head; the rest stop, and
+		 * sampledirty forces their next KeyOn to re-upload. */
 		if (!quiet_al)
 		{
 			/* quiet_al=1 (speculative/high-rate restore): leave the
@@ -1891,6 +2205,20 @@ extern "C" int PsyX_SPUAL_RestoreStateEx(const void* src, unsigned int size,
 			v->sampledirty++;
 			v->override_rings_out = 0;
 			v->pitch_pinned = 0;
+			uint32_t head, in_block;
+			if (v->adsr_phase != PSYX_SPU_ENV_OFF && v->alSource != AL_NONE && !g_SPUMuted &&
+			    SPUAL_Voice_Head(v, &head, &in_block, NULL) > 0 && head >= v->attr.addr)
+			{
+				int count = UpdateVoiceSampleEx(v, 0);
+				int offset = (int)(((head - v->attr.addr) / 16u) * 28u + in_block);
+				if (count > 0 && v->override_active)
+					alSourcePlay(v->alSource); /* host PCM: no head to seek to */
+				else if (count > 0 && offset < count)
+				{
+					alSourcei(v->alSource, AL_SAMPLE_OFFSET, offset);
+					alSourcePlay(v->alSource);
+				}
+			}
 		}
 	}
 	if (!quiet_al)
