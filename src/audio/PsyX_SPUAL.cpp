@@ -1618,12 +1618,59 @@ extern "C" unsigned int PsyX_SPUAL_HeadBoundBreaks(void)
 	return s_headBoundBreaks;
 }
 
+/* Restart a voice's audible half from its guest-visible head: the source
+ * is stopped, re-uploaded from SPU RAM and, when the envelope runs and the
+ * SPU is not muted, resumed at the sample the countdown is at. A voice
+ * whose envelope is off, or a muted SPU, leaves the source stopped with
+ * sampledirty set so the next KeyOn re-uploads. Caller holds g_SpuMutex. */
+static void SPUAL_Voice_ResumeFromHead(SPUALVoice* v)
+{
+	if (v->alSource != AL_NONE)
+		alSourceStop(v->alSource);
+	v->sampledirty++;
+	v->override_rings_out = 0;
+	v->pitch_pinned = 0;
+	uint32_t head, in_block;
+	if (v->adsr_phase != PSYX_SPU_ENV_OFF && v->alSource != AL_NONE && !g_SPUMuted &&
+	    SPUAL_Voice_Head(v, &head, &in_block, NULL) > 0 && head >= v->attr.addr)
+	{
+		int count = UpdateVoiceSampleEx(v, 0);
+		int offset = (int)(((head - v->attr.addr) / 16u) * 28u + in_block);
+		if (count > 0 && v->override_active)
+			alSourcePlay(v->alSource); /* host PCM: no head to seek to */
+		else if (count > 0 && offset < count)
+		{
+			alSourcei(v->alSource, AL_SAMPLE_OFFSET, offset);
+			alSourcePlay(v->alSource);
+		}
+	}
+}
+
 int PsyX_SPUAL_SetMute(int on_off)
 {
 	int old_state = g_SPUMuted;
 	g_SPUMuted = on_off;
 	if (on_off)
 		PsyX_SPUAL_StopOrphans();
+	else if (old_state && g_spuInit)
+	{
+		/* A voice keyed on while muted ran its envelope and head with no
+		 * source playing; unmuting resumes every running voice at the
+		 * sample it is at, so a mute spanning a KeyOn ends where an
+		 * unmuted run would be. */
+		SDL_LockMutex(g_SpuMutex);
+		for (int i = 0; i < s_spuVoiceCount; i++)
+		{
+			SPUALVoice* v = &g_SpuVoices[i];
+			if (v->adsr_phase == PSYX_SPU_ENV_OFF || v->alSource == AL_NONE)
+				continue;
+			ALint state = 0;
+			alGetSourcei(v->alSource, AL_SOURCE_STATE, &state);
+			if (state != AL_PLAYING)
+				SPUAL_Voice_ResumeFromHead(v);
+		}
+		SDL_UnlockMutex(g_SpuMutex);
+	}
 	return old_state;
 }
 
@@ -2200,25 +2247,7 @@ extern "C" int PsyX_SPUAL_RestoreStateEx(const void* src, unsigned int size,
 			/* quiet_al=1 (speculative/high-rate restore): leave the
 			 * audible half alone — the caller re-runs the same timeline
 			 * and the deterministic mirror above is all that matters. */
-			if (v->alSource != AL_NONE)
-				alSourceStop(v->alSource);
-			v->sampledirty++;
-			v->override_rings_out = 0;
-			v->pitch_pinned = 0;
-			uint32_t head, in_block;
-			if (v->adsr_phase != PSYX_SPU_ENV_OFF && v->alSource != AL_NONE && !g_SPUMuted &&
-			    SPUAL_Voice_Head(v, &head, &in_block, NULL) > 0 && head >= v->attr.addr)
-			{
-				int count = UpdateVoiceSampleEx(v, 0);
-				int offset = (int)(((head - v->attr.addr) / 16u) * 28u + in_block);
-				if (count > 0 && v->override_active)
-					alSourcePlay(v->alSource); /* host PCM: no head to seek to */
-				else if (count > 0 && offset < count)
-				{
-					alSourcei(v->alSource, AL_SAMPLE_OFFSET, offset);
-					alSourcePlay(v->alSource);
-				}
-			}
+			SPUAL_Voice_ResumeFromHead(v);
 		}
 	}
 	if (!quiet_al)
