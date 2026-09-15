@@ -253,6 +253,14 @@ void PsyX_Pad_CloseController(int slot)
 	controller->gc = NULL;
 }
 
+/* libpad's answer for a port with no controller: status 0xFF, every other
+ * byte 0. Slot 0 always has the keyboard; another slot is empty when no
+ * gamepad is bound to it and the keyboard is not assigned to it. */
+static bool PsyX_Pad_SlotEmpty(int i)
+{
+	return i != 0 && g_controllers[i].gc == NULL && !(g_activeKeyboardControllers & (1 << i));
+}
+
 // Called from LIBPAD
 void PsyX_Pad_InitPad(int slot, u_char* padData)
 {
@@ -272,10 +280,17 @@ void PsyX_Pad_InitPad(int slot, u_char* padData)
 		
 		bool wasConnected = (pad->id == 0x41 || pad->id == 0x73);
 
+		if (PsyX_Pad_SlotEmpty(slot))
+		{
+			memset(pad, 0, sizeof(*pad));
+			pad->status = 0xFF;
+			return;
+		}
+
 		if(!wasConnected)
 			// slot 0 is always present (keyboard is the main controller);
 			// 0x73 = analog pad — analog mode is on by default.
-			pad->id = slot == 0 ? 0x73 : 0xFF;
+			pad->id = 0x73;
 
 		// only reset buttons
 		pad->buttons[0] = 0xFF;
@@ -345,7 +360,7 @@ void PsyX_Pad_Event_ControllerRemoved(Sint32 deviceId)
  *
  * `pad` is fully written (buttons and all four axes) regardless of prior
  * contents: PsyX_Pad_UpdateGameControllerInput assigns rather than
- * accumulates, including its no-controller case (0xFFFF buttons, axes 127). */
+ * accumulates, including its no-controller case (0xFFFF buttons, axes 128). */
 void PsyX_Pad_DecodeLiveSlot(int i, u_short kbInputs, LPPADRAW pad)
 {
 	PsyX_Pad_UpdateGameControllerInput(g_controllers[i].gc, pad);
@@ -413,7 +428,7 @@ extern "C" void PsyX_Pad_DecodeGamepad(void* gamepad, unsigned short* out_bits,
 	memset(&scratch, 0, sizeof(scratch));
 
 	/* Assigns rather than accumulates, including its no-controller case
-	 * (0xFFFF buttons, axes 127), so a NULL gamepad needs no special path. */
+	 * (0xFFFF buttons, axes 128), so a NULL gamepad needs no special path. */
 	PsyX_Pad_UpdateGameControllerInput((SDL_Gamepad*)gamepad, &scratch);
 
 	if (out_bits) *out_bits = *(u_short*)scratch.buttons;
@@ -456,6 +471,13 @@ void PsyX_Pad_InternalPadUpdates()
 		if (controller->padData)
 		{
 			pad = (LPPADRAW)controller->padData;
+
+			if (PsyX_Pad_SlotEmpty(i))
+			{
+				memset(pad, 0, sizeof(*pad));
+				pad->status = 0xFF;
+				continue;
+			}
 
 			/* Override path (--bk2 replay): write kbInputs + the recorded analog
 			 * axes straight in and skip gamepad/keyboard polling (the override is
@@ -507,10 +529,11 @@ void PsyX_Pad_UpdateGameControllerInput(SDL_Gamepad* cont, LPPADRAW pad)
 
 	if (!cont)
 	{
-		pad->analog[0] = 127;
-		pad->analog[1] = 127;
-		pad->analog[2] = 127;
-		pad->analog[3] = 127;
+		// No gamepad: the sticks read as a DualShock's at rest, 0x80 per axis.
+		pad->analog[0] = 128;
+		pad->analog[1] = 128;
+		pad->analog[2] = 128;
+		pad->analog[3] = 128;
 
 		*(u_short*)pad->buttons = ret;
 		return;

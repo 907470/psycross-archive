@@ -70,14 +70,48 @@ int PadGetState(int port)
 	return PsyX_Pad_GetStatus(mtap, slot) ? PadStateStable : PadStateDiscon;
 }
 
+/* The connected pad is a DualShock (SCPH-1200) in analog mode: its mode-id
+ * table is {4 digital, 7 analog}, its extended id 7, and it carries two
+ * actuators, described by the four bytes its configuration command 0x46
+ * answers per actuator (function, sub-function, parameter size, current):
+ * 01 02 00 0A for the small motor and 01 01 01 14 for the large one,
+ * which libpad hands out through PadInfoAct's terms. An empty slot answers
+ * 0. */
+static int PadSlotOf(int port)
+{
+	return ((port >> 4) & 1);
+}
+
 int PadInfoMode(int port, int term, int offs)
 {
-	return 7;//?
+	if (!PsyX_Pad_GetStatus(port & 3, PadSlotOf(port)))
+		return 0;
+	switch (term)
+	{
+	case InfoModeCurID:     return 7;
+	case InfoModeCurExID:   return 7;
+	case InfoModeCurExOffs: return 1;
+	case InfoModeIdTable:   return offs == 0 ? 4 : (offs == 1 ? 7 : 0);
+	default:                return 0;
+	}
 }
 
 int PadInfoAct(int port, int acno, int term)
 {
-	return 0;
+	if (!PsyX_Pad_GetStatus(port & 3, PadSlotOf(port)))
+		return 0;
+	if (acno < 0)
+		return 2;
+	if (acno > 1)
+		return 0;
+	switch (term)
+	{
+	case InfoActFunc: return 1;
+	case InfoActSub:  return acno == 0 ? 2 : 1;
+	case InfoActSize: return acno == 0 ? 0 : 1;
+	case InfoActCurr: return acno == 0 ? 0x0A : 0x14;
+	default:          return 0;
+	}
 }
 
 int PadInfoComb(int unk00, int unk01, int unk02)
