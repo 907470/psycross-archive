@@ -732,7 +732,7 @@ extern "C" PsyX_Pad_ActuatorRegisterFn g_PsyX_Pad_ActuatorRegister = NULL;
 /* openpete: the SDL handle bound to a pad slot.
  *
  * The host drives the actuators itself (libpad registers a buffer and the host
- * ships it every tick — see core/runtime/host_rumble.c), but the handle stays
+ * ships it every tick — see core/input/host_rumble.c), but the handle stays
  * owned here, where the controller-added / -removed events already maintain
  * the slot mapping, the cold-plug enumeration and the hotplug re-claim. Handing
  * out the pointer keeps one notion of "which pad is player one" instead of
