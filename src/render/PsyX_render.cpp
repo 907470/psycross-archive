@@ -1916,12 +1916,21 @@ void GR_CopyRGBAFramebufferToVRAM(u_int* src, int x, int y, int w, int h, int up
 		{
 			uint c = *data_src++;
 
-			u_char b = ((c >> 3) & 0x1F);
+			/* The colour buffer is packed GL_RGBA / GL_UNSIGNED_BYTE, so on a
+			 * little-endian host the word holds red in bits 0..7, green in
+			 * 8..15 and blue in 16..23. A PSX framebuffer halfword is
+			 * ABGR1555: red in bits 0..4, green in 5..9, blue in 10..14. Each
+			 * channel therefore keeps its own slot; reading bits 0..7 as blue
+			 * exchanges red and blue in every halfword this writes, which the
+			 * display never shows (it presents the colour buffer) but any
+			 * primitive that textures from the copied region does. */
+			u_char r = ((c >> 3) & 0x1F);
 			u_char g = ((c >> 11) & 0x1F);
-			u_char r = ((c >> 19) & 0x1F);
+			u_char b = ((c >> 19) & 0x1F);
 			//u_char a = ((c >> 24) & 0x1F);
 
-			int a = r == g == b == 0 ? 0 : 1;
+			/* Chained comparison: ((b == g) == r) == 0, not a black test. */
+			int a = b == g == r == 0 ? 0 : 1;
 
 			*data_dst++ = r | (g << 5) | (b << 10) | (a << 15);
 		}
