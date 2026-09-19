@@ -39,6 +39,7 @@ struct GPUDrawSplit
 	DISPENV			dispenv;
 
 	BlendMode		blendMode;
+	bool			stpPasses;
 
 	TexFormat		texFormat;
 	TextureID		textureId;
@@ -665,8 +666,15 @@ static void AddSplit(bool semiTrans, bool textured)
 		textureId = overrideTexture;
 	}
 
+	// A semi-transparent textured primitive subtracts only its STP-set texels
+	// and draws the rest opaque. Reverse subtract cannot leave a texel opaque,
+	// so such a primitive is its own split, drawn as two passes; the passes of
+	// one primitive complete before the next primitive draws over them.
+	const bool stpPasses = blendMode == BM_SUBTRACT && textured && texFormat != TF_32_BIT_RGBA;
+
 	// FIXME: compare drawing environment too?
-	if (curSplit.blendMode == blendMode &&
+	if (!stpPasses &&
+		curSplit.blendMode == blendMode &&
 		curSplit.texFormat == texFormat &&
 		curSplit.textureId == textureId &&
 		curSplit.drawPrimMode == g_DrawPrimMode &&
@@ -690,6 +698,7 @@ static void AddSplit(bool semiTrans, bool textured)
 
 	GPUDrawSplit& split = g_splits[++g_splitIndex];
 	split.blendMode = blendMode;
+	split.stpPasses = stpPasses;
 	split.texFormat = texFormat;
 	split.textureId = textureId;
 	split.drawPrimMode = g_DrawPrimMode;
@@ -720,9 +729,24 @@ void DrawSplit(const GPUDrawSplit& split)
 	GR_SetupClipMode(&split.drawenv.clip, drawOnScreen);
 	GR_SetOffscreenState(&split.drawenv.clip, !drawOnScreen);
 
-	GR_SetBlendMode(split.blendMode);
+	if (split.stpPasses)
+	{
+		// STP-clear texels opaque, then STP-set texels subtracted
+		GR_SetBlendMode(BM_ADD);
+		GR_SetTexelSelect(TS_STP_CLEAR);
+		GR_DrawTriangles(split.startVertex, split.numVerts / 3);
 
-	GR_DrawTriangles(split.startVertex, split.numVerts / 3);
+		GR_SetBlendMode(BM_SUBTRACT);
+		GR_SetTexelSelect(TS_STP_SET);
+		GR_DrawTriangles(split.startVertex, split.numVerts / 3);
+
+		GR_SetTexelSelect(TS_ALL);
+	}
+	else
+	{
+		GR_SetBlendMode(split.blendMode);
+		GR_DrawTriangles(split.startVertex, split.numVerts / 3);
+	}
 
 	if (split.debugText)
 		GR_PopDebugLabel();

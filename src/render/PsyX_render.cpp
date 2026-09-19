@@ -1005,6 +1005,8 @@ typedef struct
 	GLint projection3DLoc;
 	GLint bilinearFilterLoc;
 	GLint texelSizeLoc;
+	GLint stpBlendLoc;
+	GLint texelSelectLoc;
 #endif
 } GTEShader;
 
@@ -1019,6 +1021,21 @@ GLint u_projectionLoc;
 GLint u_projection3DLoc;
 GLint u_bilinearFilterLoc;
 GLint u_texelSizeLoc;
+GLint u_stpBlendLoc = -1;
+GLint u_texelSelectLoc = -1;
+
+int g_stpBlend = 0;
+int g_texelSelect = TS_ALL;
+
+// uploads the semi-transparency texel state to the bound shader
+static void GR_UpdateStpUniforms()
+{
+	if (u_stpBlendLoc != -1)
+		glUniform1i(u_stpBlendLoc, g_stpBlend);
+
+	if (u_texelSelectLoc != -1)
+		glUniform1i(u_texelSelectLoc, g_texelSelect);
+}
 
 #define GPU_PACK_RG\
 	"		float color_16 = (color_rg.y * 256.0 + color_rg.x) * 255.0;\n"
@@ -1161,6 +1178,25 @@ GLint u_texelSizeLoc;
 	"		v_z = (gl_Position.z - 40.0) * 0.005;\n"\
 	"	}\n"
 
+// A semi-transparent textured primitive blends only the texels whose bit 15
+// (STP) is set; every other non-zero texel draws opaque. decodeRG() gives an
+// STP-set texel alpha 0.5 and any other alpha 1.0, which is the average mode's
+// blend weight as it stands. The additive modes blend ONE, ONE_MINUS_SRC_ALPHA:
+// stpBlend 1 (add) moves the alpha to 0 for STP-set texels and 1 otherwise,
+// stpBlend 2 (add a quarter of the source) also scales STP-set texels by 1/4.
+// texelSelect 1 keeps only STP-clear texels, 2 only STP-set texels; subtract
+// draws each primitive as those two passes, since reverse subtract cannot
+// leave a texel opaque.
+#define GPU_STP_UNIFORMS\
+	"	uniform int stpBlend;\n"\
+	"	uniform int texelSelect;\n"
+
+#define GPU_STP_BLEND\
+	"		if (texelSelect == 1 && stp > 0.5) { discard; }\n"\
+	"		if (texelSelect == 2 && stp < 0.5) { discard; }\n"\
+	"		if (stpBlend == 2) { fragColor.rgb *= 1.0 - 0.75 * stp; }\n"\
+	"		if (stpBlend > 0) { fragColor.a = 1.0 - stp; }\n"
+
 #define GPU_FRAGMENT_SAMPLE_SHADER(bit) \
 	GPU_PACK_RG_FUNC\
 	GPU_DECODE_RG_FUNC\
@@ -1171,13 +1207,15 @@ GLint u_texelSizeLoc;
 	GPU_BILINEAR_SAMPLE_FUNC\
 	GPU_NEAREST_SAMPLE_FUNC\
 	"	uniform int bilinearFilter;\n"\
+	GPU_STP_UNIFORMS\
 	"	void main() {\n"\
 	"		if(bilinearFilter > 0)\n"\
 	"			fragColor = BilinearTextureSample(v_texcoord.xy);\n"\
 	"		else\n"\
 	"			fragColor = NearestTextureSample(v_texcoord.xy);\n"\
-	"		\n"\
+	"		float stp = 2.0 - 2.0 * fragColor.a;\n"\
 	GPU_DITHERING\
+	GPU_STP_BLEND\
 	"	}\n"
 
 const char* gte_shader_4 =
@@ -1224,10 +1262,13 @@ const char* gte_shader_32_rgba =
 	"	uniform sampler2D s_texture;\n"\
 	"	uniform int bilinearFilter;\n"\
 	"	uniform vec2 texelSize;\n"\
+	GPU_STP_UNIFORMS\
 	"	void main() {\n"\
 	"		vec2 tc = v_texcoord.xy * texelSize + texelSize * 0.5;\n"\
 	"		fragColor = texture2D(s_texture, tc);\n"\
+	"		float stp = 1.0; // no STP bit: every texel blends\n"\
 	GPU_DITHERING\
+	GPU_STP_BLEND\
 	"	}\n"
 	"#endif\n";
 
@@ -1431,6 +1472,8 @@ void GR_CompilePSXShader(GTEShader* sh, const char* source)
 	sh->bilinearFilterLoc = glGetUniformLocation(sh->shader, "bilinearFilter");
 	sh->projectionLoc = glGetUniformLocation(sh->shader, "Projection");
 	sh->texelSizeLoc = glGetUniformLocation(sh->shader, "texelSize");
+	sh->stpBlendLoc = glGetUniformLocation(sh->shader, "stpBlend");
+	sh->texelSelectLoc = glGetUniformLocation(sh->shader, "texelSelect");
 #if USE_PGXP
 	sh->projection3DLoc = glGetUniformLocation(sh->shader, "Projection3D");
 #endif
@@ -1750,6 +1793,8 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_4.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_4.projectionLoc;
 		u_projection3DLoc = g_gte_shader_4.projection3DLoc;
+		u_stpBlendLoc = g_gte_shader_4.stpBlendLoc;
+		u_texelSelectLoc = g_gte_shader_4.texelSelectLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_8_BIT:
@@ -1757,6 +1802,8 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_8.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_8.projectionLoc;
 		u_projection3DLoc = g_gte_shader_8.projection3DLoc;
+		u_stpBlendLoc = g_gte_shader_8.stpBlendLoc;
+		u_texelSelectLoc = g_gte_shader_8.texelSelectLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_16_BIT:
@@ -1764,6 +1811,8 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = g_gte_shader_16.bilinearFilterLoc;
 		u_projectionLoc = g_gte_shader_16.projectionLoc;
 		u_projection3DLoc = g_gte_shader_16.projection3DLoc;
+		u_stpBlendLoc = g_gte_shader_16.stpBlendLoc;
+		u_texelSelectLoc = g_gte_shader_16.texelSelectLoc;
 		u_texelSizeLoc = -1;
 		break;
 	case TF_32_BIT_RGBA:
@@ -1771,9 +1820,15 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_bilinearFilterLoc = -1;
 		u_projectionLoc = g_gte_shader_32_rgba.projectionLoc;
 		u_projection3DLoc = g_gte_shader_32_rgba.projection3DLoc;
+		u_stpBlendLoc = g_gte_shader_32_rgba.stpBlendLoc;
+		u_texelSelectLoc = g_gte_shader_32_rgba.texelSelectLoc;
 		u_texelSizeLoc = g_gte_shader_32_rgba.texelSizeLoc;
 		break;
 	}
+
+#if USE_OPENGL
+	GR_UpdateStpUniforms();
+#endif
 
 	if (g_dbg_texturelessMode) {
 		texture = g_whiteTexture;
@@ -2338,6 +2393,9 @@ void GR_SetBlendMode(BlendMode blendMode)
 			glDisable(GL_BLEND);
 		}
 
+		g_stpBlend = 0;
+		GR_UpdateStpUniforms();
+
 		g_PreviousBlendMode = blendMode;
 		GR_EnableDepth(1);
 		return;
@@ -2354,22 +2412,43 @@ void GR_SetBlendMode(BlendMode blendMode)
 		GR_EnableDepth(0);
 	}
 
+	// STP-clear texels draw opaque through the source alpha the shader writes
 	glBlendEquationSeparate(blendMode == BM_SUBTRACT ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD, GL_FUNC_ADD);
 	switch (blendMode) {
 	case BM_AVERAGE:
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		g_stpBlend = 0;
 		break;
 	case BM_ADD:
-	case BM_SUBTRACT:
-		glBlendFunc(GL_ONE, GL_ONE);
+		glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+		g_stpBlend = 1;
 		break;
 	case BM_ADD_QUATER_SOURCE:
-		glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE); 
+		glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+		g_stpBlend = 2;
+		break;
+	case BM_SUBTRACT:
+		glBlendFunc(GL_ONE, GL_ONE);
+		g_stpBlend = 0;
 		break;
 	}
+
+	GR_UpdateStpUniforms();
 #endif
 
 	g_PreviousBlendMode = blendMode;
+}
+
+void GR_SetTexelSelect(TexelSelect texelSelect)
+{
+	if (g_texelSelect == texelSelect)
+		return;
+
+	g_texelSelect = texelSelect;
+
+#if USE_OPENGL
+	GR_UpdateStpUniforms();
+#endif
 }
 
 void GR_SetPolygonOffset(float ofs)

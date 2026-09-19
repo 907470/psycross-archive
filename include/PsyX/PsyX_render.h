@@ -159,6 +159,14 @@ typedef enum
 	BM_ADD_QUATER_SOURCE
 } BlendMode;
 
+// Texels a textured draw keeps, by bit 15 (STP) of the 16-bit texel colour
+typedef enum
+{
+	TS_ALL,
+	TS_STP_CLEAR,
+	TS_STP_SET
+} TexelSelect;
+
 typedef enum
 {
 	TF_4_BIT,
@@ -228,6 +236,7 @@ extern void			GR_Perspective3D(const float fov, const float width, const float h
 extern void			GR_Ortho2D(float left, float right, float bottom, float top, float znear, float zfar);
 
 extern void			GR_SetBlendMode(BlendMode blendMode);
+extern void			GR_SetTexelSelect(TexelSelect texelSelect);
 extern void			GR_SetPolygonOffset(float ofs);
 extern void			GR_SetStencilMode(int drawPrim);
 extern void			GR_EnableDepth(int enable);
