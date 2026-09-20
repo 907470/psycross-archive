@@ -2012,6 +2012,27 @@ void GR_CopyRGBAFramebufferToVRAM(u_int* src, int x, int y, int w, int h, int up
 	VRAM_DirtyNotify(x, y, w, h);
 }
 
+/* Upload one rectangle of the VRAM mirror into the texture primitives sample.
+ * Cheaper than the full-mirror GR_UpdateVRAM upload and, unlike setting
+ * vram_need_update, it does not depend on a later frame running that upload:
+ * the rect is correct in the texture the moment this returns. */
+static void GR_UploadVRAMRect(int x, int y, int w, int h)
+{
+#if USE_OPENGL
+	if (w <= 0 || h <= 0)
+		return;
+
+	glBindTexture(GL_TEXTURE_2D, g_vramTexture);
+	glPixelStorei(GL_UNPACK_ROW_LENGTH, VRAM_WIDTH);
+	glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, VRAM_FORMAT, GL_UNSIGNED_BYTE,
+		vram + (size_t)y * VRAM_WIDTH + x);
+	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+	glBindTexture(GL_TEXTURE_2D, g_lastBoundTexture);
+#else
+	(void)x; (void)y; (void)w; (void)h;
+#endif
+}
+
 void GR_ReadFramebufferDataToVRAM()
 {
 	int x, y, w, h;
@@ -2035,6 +2056,7 @@ void GR_ReadFramebufferDataToVRAM()
 		PBO_Download(&g_glFramebufferPBO);
 		glBindTexture(GL_TEXTURE_2D, 0);
 		GR_CopyRGBAFramebufferToVRAM((u_int*)g_glFramebufferPBO.pixels, x, y, w, h, 0, 0);
+		GR_UploadVRAMRect(x, y, w, h);
 	}
 #endif
 }
@@ -2211,24 +2233,13 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
 		int src_h = g_glPresentFramebuffer ? g_presentFbHeight : g_windowHeight;
 		glBlitFramebuffer(0, 0, src_w, src_h, x, y + h, x + w, y, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-		// Blit framebuffer to VRAM screen area
-
-		// before drawing set source and target
-		glBindFramebuffer(GL_FRAMEBUFFER, g_glVRAMFramebuffer);
-
-		// rebind vram texture
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_vramTexture, 0);
-
-		// setup draw and read framebuffers
-		glBindFramebuffer(GL_READ_FRAMEBUFFER, g_glBlitFramebuffer);					// source is backbuffer
-		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_glVRAMFramebuffer);
-
-		glBlitFramebuffer(0, 0, w, h,
-			x, y + h, x + w, y,
-			GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-		
-		// done, unbind
+		/* The scene stays in g_fbTexture as RGBA8. It is not blitted into the
+		 * VRAM texture: that texture holds each VRAM halfword as a pair of
+		 * 8-bit components which the fragment stage recombines as
+		 * g * 256 + r, so a colour-buffer blit would store the display's red
+		 * and green bytes where the halfword's low and high bytes belong.
+		 * GR_ReadFramebufferDataToVRAM converts the same pixels to ABGR1555
+		 * and uploads that rect instead. */
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 	}
