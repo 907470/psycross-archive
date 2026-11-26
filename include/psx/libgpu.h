@@ -329,7 +329,7 @@ typedef struct _RECT16 {
 
 #if USE_EXTENDED_PRIM_POINTERS
 
-#if defined(_M_X64) || defined(__amd64__)
+#if defined(_M_X64) || defined(__amd64__) || defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
 
 #define DECLARE_P_ADDR \
 		uintptr_t addr; \
@@ -366,7 +366,7 @@ typedef struct _RECT16 {
 
 #define P_LEN		2		// 2 longs
 
-#endif // _M_X64 || __amd64__
+#endif // 64-bit: _M_X64 || __amd64__ || arm64
 
 #define DECLARE_P_ADDR_PTAG DECLARE_P_ADDR
 
